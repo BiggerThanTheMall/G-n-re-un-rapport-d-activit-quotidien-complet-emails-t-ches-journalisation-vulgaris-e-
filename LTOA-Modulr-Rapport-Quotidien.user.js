@@ -1,26 +1,582 @@
 // ==UserScript==
-// @name         LTOA Modulr - Rapport Quotidien V4
+// @name         LTOA Modulr - Rapport Quotidien
 // @namespace    https://github.com/BiggerThanTheMall/tampermonkey-ltoa
-// @version      4.0.6
-// @description  Génère un rapport d'activité quotidien complet (emails, tâches, journalisation vulgarisée)
-// @author       LTOA
+// @version      5.1.1
+// @description  Génération automatique du rapport d’activité quotidien dans Modulr
+// @author       LTOA Assurances
 // @match        https://courtage.modulr.fr/*
+// @match        https://*.aircall.io/*
+// @exclude      https://courtage.modulr.fr/fr/intranet/edm/preview/document/*
+// @exclude      https://courtage.modulr.fr/fr/intranet/edm/display/Client/*
+// @exclude      https://courtage.modulr.fr/fr/scripts/sent_emails/sent_emails_frame.php?sent_email_id*
 // @run-at       document-end
-//
 // @grant        GM_xmlhttpRequest
 // @grant        GM_openInTab
+// @grant        GM_getValue
+// @grant        GM_setValue
+// @grant        GM_registerMenuCommand
 // @connect      courtage.modulr.fr
+// @connect      api.aircall.io
 //
-// @require      https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js
-// @require      https://cdnjs.cloudflare.com/ajax/libs/jspdf-autotable/3.5.31/jspdf.plugin.autotable.min.js
-//
-// @updateURL    https://raw.githubusercontent.com/BiggerThanTheMall/tampermonkey-ltoa/main/LTOA-Modulr-Rapport-Quotidien-V4.user.js
-// @downloadURL  https://raw.githubusercontent.com/BiggerThanTheMall/tampermonkey-ltoa/main/LTOA-Modulr-Rapport-Quotidien-V4.user.js
+// @updateURL    https://raw.githubusercontent.com/BiggerThanTheMall/G-n-re-un-rapport-d-activit-quotidien-complet-emails-t-ches-journalisation-vulgaris-e-/main/LTOA-Modulr-Rapport-Quotidien.user.js
+// @downloadURL  https://raw.githubusercontent.com/BiggerThanTheMall/G-n-re-un-rapport-d-activit-quotidien-complet-emails-t-ches-journalisation-vulgaris-e-/main/LTOA-Modulr-Rapport-Quotidien.user.js
 // ==/UserScript==
 
 (function() {
     'use strict';
 
+    const configureAircallApi = () => {
+        const currentId = GM_getValue('ltoa_aircall_api_id', '');
+        const id = prompt('API ID Aircall (laissée vide = conserver la valeur actuelle)', currentId);
+        if (id === null) return false;
+        const token = prompt('API Token Aircall (stocké uniquement dans Tampermonkey sur ce navigateur)', '');
+        if (token === null) return false;
+        if (id.trim()) GM_setValue('ltoa_aircall_api_id', id.trim());
+        if (token.trim()) GM_setValue('ltoa_aircall_api_token', token.trim());
+        alert('Configuration Aircall enregistrée localement.');
+        return true;
+    };
+
+    GM_registerMenuCommand('Configurer l’API Aircall pour les rapports', configureAircallApi);
+
+    // Le même userscript assure les deux rôles. Lorsque Modulr ouvre Aircall
+    // avec les paramètres ltoa_*, cette branche collecte puis renvoie les appels.
+    if (window.location.hostname.endsWith('.aircall.io')) {
+        (function() {
+            'use strict';
+
+            const CONFIG = {
+                DEBUG: true,
+                DELAY_BETWEEN_ACTIONS: 1000,
+                DELAY_LOAD_MORE: 2000,
+                DELAY_PREVIEW: 1500,
+                MAX_LOAD_MORE_CLICKS: 200,
+                AIRCALL_API_ROOT: 'https://api.aircall.io/v1',
+                API_PER_PAGE: 50,
+            };
+
+            // Mapping Modulr -> Aircall
+            const USER_MAP_AIRCALL = {
+                'Doryan KALAH': 'Doryan Kalah',
+                'Eddy KALAH': 'Eddy Kalah',
+                'Ghais Kalah': 'Ghais Kalah',
+                'GHAIS KALAH': 'Ghais Kalah',
+                'Jake CASIMIR': 'Jake CASIMIR',
+                'Louli VULLIOD-PIN': 'Louli VULLIOD',
+                'Nadia KALAH': 'Nadia Kalah',
+                'Youness OUACHBAB': 'Youness OUACHBAB',
+                'Sheana KRIEF': 'Sheana KRIEF',
+            };
+
+            const Utils = {
+                log: (msg, data = null) => {
+                    if (CONFIG.DEBUG) console.log(`[LTOA-Aircall] ${msg}`, data || '');
+                },
+                delay: (ms) => new Promise(resolve => setTimeout(resolve, ms)),
+
+                formatDateForAircall: (dateStr) => {
+                    const parts = dateStr.split('/');
+                    const date = new Date(parseInt(parts[2]), parseInt(parts[1]) - 1, parseInt(parts[0]));
+                    const months = ['January', 'February', 'March', 'April', 'May', 'June',
+                                   'July', 'August', 'September', 'October', 'November', 'December'];
+                    const day = date.getDate();
+                    const suffix = (day === 1 || day === 21 || day === 31) ? 'st' :
+                                  (day === 2 || day === 22) ? 'nd' :
+                                  (day === 3 || day === 23) ? 'rd' : 'th';
+                    return `${months[date.getMonth()]} ${day}${suffix}, ${date.getFullYear()}`;
+                },
+
+                isLoggedIn: () => {
+                    return !window.location.pathname.includes('/login') &&
+                           !window.location.pathname.includes('/auth') &&
+                           !document.querySelector('input[type="password"]');
+                },
+
+                getLtoaParams: () => {
+                    const params = new URLSearchParams(window.location.search);
+                    const user = params.get('ltoa_user');
+                    const date = params.get('ltoa_date');
+                    const autoclose = params.get('ltoa_autoclose') === 'true';
+                    if (user && date) return { user, date, autoclose };
+                    return null;
+                },
+
+                sendToParent: (data) => {
+                    if (window.opener) {
+                        try { window.opener.postMessage(data, '*'); return true; } catch (e) {}
+                    }
+                    return false;
+                },
+
+                normalizeName: (value) => String(value || '')
+                    .normalize('NFD').replace(/[\u0300-\u036f]/g, '')
+                    .toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim(),
+
+                parseFrenchDateRange: (dateStr) => {
+                    const [day, month, year] = String(dateStr).split('/').map(Number);
+                    if (!day || !month || !year) throw new Error('Date Aircall invalide');
+                    // Les rapports LTOA sont en heure française. Midi évite les ambiguïtés DST,
+                    // puis on reconstruit les bornes locales via Intl.
+                    const localStart = new Date(year, month - 1, day, 0, 0, 0);
+                    const localEnd = new Date(year, month - 1, day + 1, 0, 0, 0);
+                    return {
+                        from: Math.floor(localStart.getTime() / 1000),
+                        to: Math.floor(localEnd.getTime() / 1000) - 1
+                    };
+                },
+
+                secondsToText: (seconds) => {
+                    const total = Math.max(0, Number(seconds) || 0);
+                    const minutes = Math.floor(total / 60);
+                    const rest = total % 60;
+                    return minutes ? `${minutes}m ${rest}s` : `${rest}s`;
+                }
+            };
+
+            const AircallApi = {
+                credentials() {
+                    return {
+                        id: GM_getValue('ltoa_aircall_api_id', ''),
+                        token: GM_getValue('ltoa_aircall_api_token', '')
+                    };
+                },
+
+                configure: configureAircallApi,
+
+                request(url) {
+                    const credentials = this.credentials();
+                    if (!credentials.id || !credentials.token) {
+                        return Promise.reject(new Error('API Aircall non configurée'));
+                    }
+                    return new Promise((resolve, reject) => {
+                        GM_xmlhttpRequest({
+                            method: 'GET',
+                            url,
+                            headers: {
+                                Authorization: `Basic ${btoa(`${credentials.id}:${credentials.token}`)}`,
+                                Accept: 'application/json'
+                            },
+                            timeout: 30000,
+                            onload: response => {
+                                let body = null;
+                                try { body = JSON.parse(response.responseText || '{}'); } catch (_) {}
+                                if (response.status >= 200 && response.status < 300 && body) resolve(body);
+                                else reject(new Error(body?.troubleshoot || body?.error || `Aircall HTTP ${response.status}`));
+                            },
+                            ontimeout: () => reject(new Error('Délai API Aircall dépassé')),
+                            onerror: () => reject(new Error('Connexion API Aircall impossible'))
+                        });
+                    });
+                },
+
+                async findUserId(userName) {
+                    let url = `${CONFIG.AIRCALL_API_ROOT}/users?per_page=50&page=1`;
+                    const wanted = Utils.normalizeName(USER_MAP_AIRCALL[userName] || userName);
+                    while (url) {
+                        const payload = await this.request(url);
+                        const user = (payload.users || []).find(item => Utils.normalizeName(item.name) === wanted);
+                        if (user) return user.id;
+                        url = payload.meta?.next_page_link || null;
+                    }
+                    throw new Error(`Collaborateur Aircall introuvable : ${userName}`);
+                },
+
+                async insight(callId, endpoint) {
+                    // 650 ms entre les requêtes garde une marge sous la limite officielle
+                    // de 120 requêtes/minute. Une donnée Conversation Intelligence absente
+                    // ne doit jamais faire échouer l'ensemble du rapport.
+                    await Utils.delay(650);
+                    try {
+                        return await this.request(`${CONFIG.AIRCALL_API_ROOT}/calls/${callId}/${endpoint}`);
+                    } catch (error) {
+                        Utils.log(`Information ${endpoint} indisponible pour l'appel ${callId}: ${error.message}`);
+                        return null;
+                    }
+                },
+
+                async enrichCall(call, position, total, updateStatus) {
+                    if (!call.answered) return call;
+                    updateStatus(`Analyse Aircall ${position}/${total}...`, 60 + (position / Math.max(total, 1)) * 30);
+
+                    const summaryPayload = await this.insight(call.id, 'summary');
+                    const sentimentPayload = await this.insight(call.id, 'sentiments');
+                    const topicsPayload = await this.insight(call.id, 'topics');
+                    const actionsPayload = await this.insight(call.id, 'action_items');
+                    const transcriptPayload = await this.insight(call.id, 'transcription');
+
+                    const externalSentiment = sentimentPayload?.sentiment?.participants?.find(p => p.type === 'external')?.value
+                        || sentimentPayload?.sentiment?.participants?.[0]?.value || null;
+                    const moodMap = { POSITIVE: 'Positif', NEGATIVE: 'Négatif', NEUTRAL: 'Neutre' };
+                    const utterances = transcriptPayload?.transcription?.content?.utterances || [];
+
+                    call.summary = summaryPayload?.summary?.content || call.summary || null;
+                    call.mood = moodMap[String(externalSentiment || '').toUpperCase()] || externalSentiment || null;
+                    call.topics = Array.isArray(topicsPayload?.topic?.content) ? topicsPayload.topic.content : [];
+                    call.actionItems = (actionsPayload?.action_items || [])
+                        .map(item => typeof item === 'string' ? item : item?.content)
+                        .filter(Boolean);
+                    call.transcript = utterances.map(item => {
+                        const speaker = item.participant_type === 'internal' ? 'Collaborateur' :
+                            (item.participant_type === 'external' ? 'Interlocuteur' : 'Autre');
+                        return `${speaker} : ${item.text || ''}`;
+                    }).filter(line => !line.endsWith(': ')).join('\n');
+                    call.transcriptLanguage = transcriptPayload?.transcription?.content?.language || null;
+                    return call;
+                },
+
+                async collect(userName, dateStr, updateStatus) {
+                    const userId = await this.findUserId(userName);
+                    const range = Utils.parseFrenchDateRange(dateStr);
+                    let url = `${CONFIG.AIRCALL_API_ROOT}/calls/search?user_id=${encodeURIComponent(userId)}` +
+                        `&from=${range.from}&to=${range.to}&order=asc&per_page=${CONFIG.API_PER_PAGE}` +
+                        '&fetch_contact=true&page=1';
+                    const calls = [];
+                    const seenIds = new Set();
+                    let page = 0;
+
+                    while (url) {
+                        page++;
+                        updateStatus(`API Aircall : page ${page}...`, Math.min(90, 20 + page * 5));
+                        const payload = await this.request(url);
+                        for (const call of payload.calls || []) {
+                            if (seenIds.has(call.id)) continue;
+                            seenIds.add(call.id);
+                            const contact = call.contact?.first_name || call.contact?.last_name
+                                ? [call.contact.first_name, call.contact.last_name].filter(Boolean).join(' ')
+                                : (call.contact?.name || call.raw_digits || 'Inconnu');
+                            const comments = (call.comments || []).map(item => item.content).filter(Boolean);
+                            calls.push({
+                                id: call.id,
+                                type: call.direction === 'inbound' ? 'entrant' : 'sortant',
+                                user: call.user?.name || userName,
+                                contact,
+                                phone: call.raw_digits || '',
+                                durationSeconds: Number(call.duration) || 0,
+                                duration: Utils.secondsToText(call.duration),
+                                time: call.started_at ? new Date(call.started_at * 1000).toLocaleTimeString('fr-FR', {hour:'2-digit', minute:'2-digit'}) : '',
+                                answered: Boolean(call.answered_at),
+                                missedReason: call.missed_call_reason || null,
+                                tags: (call.tags || []).map(tag => tag.name).filter(Boolean),
+                                summary: comments.join(' — ') || null,
+                                source: 'api'
+                            });
+                        }
+                        url = payload.meta?.next_page_link || null;
+                        if (page > 250) throw new Error('Pagination Aircall anormalement longue');
+                    }
+
+                    const answeredCalls = calls.filter(call => call.answered);
+                    for (let index = 0; index < answeredCalls.length; index++) {
+                        await this.enrichCall(answeredCalls[index], index + 1, answeredCalls.length, updateStatus);
+                    }
+                    return calls;
+                }
+            };
+
+            const AircallCollector = {
+                createStatusIndicator() {
+                    const existing = document.getElementById('ltoa-status');
+                    if (existing) existing.remove();
+
+                    const div = document.createElement('div');
+                    div.id = 'ltoa-status';
+                    div.innerHTML = `
+                        <div style="position:fixed;top:10px;right:10px;z-index:999999;background:linear-gradient(135deg,#c62828,#8e0000);color:white;padding:15px 20px;border-radius:10px;box-shadow:0 4px 20px rgba(0,0,0,0.3);font-family:sans-serif;min-width:300px;">
+                            <div style="display:flex;align-items:center;margin-bottom:8px;">
+                                <span style="font-size:20px;margin-right:10px;">📞</span>
+                                <strong>LTOA Aircall</strong>
+                            </div>
+                            <div id="ltoa-user" style="font-size:12px;opacity:0.8;"></div>
+                            <div id="ltoa-date" style="font-size:12px;opacity:0.8;margin-bottom:8px;"></div>
+                            <div id="ltoa-msg" style="font-size:13px;">Démarrage...</div>
+                            <div style="margin-top:10px;height:4px;background:rgba(255,255,255,0.3);border-radius:2px;">
+                                <div id="ltoa-bar" style="width:0%;height:100%;background:white;transition:width 0.3s;"></div>
+                            </div>
+                        </div>
+                    `;
+                    document.body.appendChild(div);
+                },
+
+                updateStatus(msg, pct = null) {
+                    Utils.log(msg);
+                    const el = document.getElementById('ltoa-msg');
+                    const bar = document.getElementById('ltoa-bar');
+                    if (el) el.textContent = msg;
+                    if (bar && pct !== null) bar.style.width = pct + '%';
+                    Utils.sendToParent({ type: 'LTOA_AIRCALL_STATUS', message: msg });
+                },
+
+                async waitForPageLoad() {
+                    this.updateStatus('Chargement page...', 5);
+                    for (let i = 0; i < 30; i++) {
+                        await Utils.delay(500);
+                        if (document.querySelector('[data-test="all-filters-button"]')) return true;
+                    }
+                    return false;
+                },
+
+                // 1. Ouvrir filtres
+                async openFilters() {
+                    this.updateStatus('Ouverture filtres...', 10);
+                    const btn = document.querySelector('[data-test="all-filters-button"]');
+                    if (btn) {
+                        btn.click();
+                        await Utils.delay(1000);
+                        return true;
+                    }
+                    return false;
+                },
+
+                // 2. Sélectionner utilisateur
+                async selectUser(userName) {
+                    const aircallName = USER_MAP_AIRCALL[userName] || userName;
+                    this.updateStatus(`Sélection: ${aircallName}`, 20);
+
+                    // Clic sur bouton "Utilisateurs"
+                    const trigger = document.querySelector('[data-test="filter-summary-user-trigger"]');
+                    if (!trigger) {
+                        Utils.log('❌ Bouton Utilisateurs non trouvé');
+                        return false;
+                    }
+
+                    Utils.log('Clic sur Utilisateurs');
+                    trigger.click();
+                    await Utils.delay(1000);
+
+                    // Chercher dans la liste des menu-items
+                    const items = document.querySelectorAll('[data-test^="menu-item-"]');
+                    Utils.log(`${items.length} items trouvés`);
+
+                    for (const item of items) {
+                        const text = item.textContent.trim();
+                        Utils.log(`  Item: "${text.substring(0, 30)}..."`);
+
+                        // Vérifier si le nom est dedans
+                        if (text.toLowerCase().includes(aircallName.toLowerCase())) {
+                            Utils.log(`  ✓ TROUVÉ! Clic`);
+
+                            // Cliquer sur la checkbox
+                            const checkbox = item.querySelector('input[type="checkbox"]');
+                            if (checkbox) {
+                                checkbox.click();
+                                await Utils.delay(500);
+                                return true;
+                            }
+                        }
+                    }
+
+                    Utils.log('❌ Utilisateur non trouvé');
+                    return false;
+                },
+
+                // 3. Sélectionner date
+                async selectDate(dateStr) {
+                    const aircallDate = Utils.formatDateForAircall(dateStr);
+                    this.updateStatus(`Sélection date: ${dateStr}`, 35);
+
+                    // Clic sur bouton "Date"
+                    const trigger = document.querySelector('[data-test="date-select-input"]');
+                    if (!trigger) {
+                        Utils.log('❌ Bouton Date non trouvé');
+                        return false;
+                    }
+
+                    Utils.log('Clic sur Date');
+                    trigger.click();
+                    await Utils.delay(1000);
+
+                    // Clic 2x sur la date
+                    for (let i = 0; i < 2; i++) {
+                        const btns = document.querySelectorAll('button[title]');
+                        for (const btn of btns) {
+                            if (btn.title === aircallDate) {
+                                Utils.log(`Clic ${i+1}/2 sur ${btn.title}`);
+                                btn.click();
+                                await Utils.delay(500);
+                                break;
+                            }
+                        }
+                    }
+                    return true;
+                },
+
+                // 4. Valider
+                async clickSeeResults() {
+                    this.updateStatus('Validation filtres...', 50);
+                    const btn = document.querySelector('[data-test="see-results-button"]');
+                    if (btn) {
+                        btn.click();
+                        await Utils.delay(2000);
+                        return true;
+                    }
+                    return false;
+                },
+
+                // 5. Charger tout
+                async loadAllResults() {
+                    this.updateStatus('Chargement résultats...', 55);
+                    let clicks = 0;
+                    let previousCount = -1;
+                    let unchanged = 0;
+                    while (clicks < CONFIG.MAX_LOAD_MORE_CLICKS) {
+                        await Utils.delay(1000);
+                        const currentCount = document.querySelectorAll('tbody tr').length;
+                        unchanged = currentCount === previousCount ? unchanged + 1 : 0;
+                        previousCount = currentCount;
+                        const btn = document.querySelector('[data-test="loading-button"]');
+                        if (!btn || btn.disabled) break;
+                        btn.click();
+                        clicks++;
+                        this.updateStatus(`Chargement... (${clicks})`, 55 + clicks);
+                        await Utils.delay(2000);
+                        if (unchanged >= 3) break;
+                    }
+                },
+
+                // Résumé IA
+                async getSummary(row) {
+                    try {
+                        const btn = row.querySelector('[data-test="table-preview-button"]');
+                        if (!btn) return null;
+                        btn.click();
+                        await Utils.delay(CONFIG.DELAY_PREVIEW);
+                        const el = document.querySelector('[data-test="call-context-summary-text"]');
+                        const summary = el ? el.textContent.trim() : null;
+                        document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' }));
+                        await Utils.delay(300);
+                        return summary;
+                    } catch (e) { return null; }
+                },
+
+                // 6. Collecter
+                async collectCalls() {
+                    this.updateStatus('Collecte appels...', 65);
+                    const calls = [];
+                    const rows = document.querySelectorAll('tbody tr');
+                    Utils.log(`${rows.length} appels`);
+
+                    let i = 0;
+                    for (const row of rows) {
+                        i++;
+                        this.updateStatus(`Collecte ${i}/${rows.length}...`, 65 + (i/rows.length)*25);
+
+                        try {
+                            const cells = row.querySelectorAll('td');
+                            if (cells.length < 6) continue;
+
+                            const svg = cells[0].innerHTML || '';
+                            const type = svg.includes('M12.293') ? 'sortant' : (svg.includes('M16.942') ? 'entrant' : 'inconnu');
+                            const user = (cells[1].textContent || '').trim().split('\n')[0];
+                            const contact = (cells[3].textContent || '').trim().split('\n')[0] || 'Inconnu';
+                            const duration = (cells[4].textContent || '').trim() || '0s';
+                            const time = (cells[5].textContent || '').trim().split('\n')[0] || '';
+
+                            let mood = null;
+                            for (const c of cells) {
+                                const t = c.textContent || '';
+                                if (t.includes('Neutre')) { mood = 'Neutre'; break; }
+                                if (t.includes('Positif')) { mood = 'Positif'; break; }
+                                if (t.includes('Négatif')) { mood = 'Négatif'; break; }
+                            }
+
+                            const summary = await this.getSummary(row);
+                            calls.push({ type, user, contact, duration, time, mood, summary });
+                            Utils.log(`  ✓ ${type} | ${contact}`);
+                        } catch (e) {}
+                    }
+                    return calls;
+                },
+
+                async start(request) {
+                    this.createStatusIndicator();
+                    document.getElementById('ltoa-user').textContent = `👤 ${request.user}`;
+                    document.getElementById('ltoa-date').textContent = `📅 ${request.date}`;
+
+                Utils.log('=== AIRCALL intégré v3.1.0 ===');
+                    Utils.log('User:', request.user);
+                    Utils.log('Date:', request.date);
+
+                    try {
+                        // Voie fiable : API officielle et pagination complète.
+                        if (AircallApi.credentials().id && AircallApi.credentials().token) {
+                            const calls = await AircallApi.collect(request.user, request.date, (msg, pct) => this.updateStatus(msg, pct));
+                            Utils.sendToParent({
+                                type: 'LTOA_AIRCALL_RESPONSE', success: true, calls,
+                                user: request.user, date: request.date,
+                                collectionStatus: 'complete', collectionSource: 'api'
+                            });
+                            this.updateStatus(`✅ ${calls.length} appels via API`, 100);
+                            await Utils.delay(1200);
+                            if (request.autoclose) window.close();
+                            return;
+                        }
+
+                        this.updateStatus('API non configurée : collecte visuelle de secours', 2);
+
+                        // Connexion
+                        let wait = 0;
+                        while (!Utils.isLoggedIn() && wait < 60000) {
+                            this.updateStatus('Connexion...', 0);
+                            await Utils.delay(2000);
+                            wait += 2000;
+                        }
+                        if (!Utils.isLoggedIn()) throw new Error('Non connecté');
+
+                        await this.waitForPageLoad();
+                        await Utils.delay(1000);
+
+                        // Filtres
+                        await this.openFilters();
+                        await Utils.delay(1000);
+
+                        await this.selectUser(request.user);
+                        await Utils.delay(1000);
+
+                        await this.selectDate(request.date);
+                        await Utils.delay(1000);
+
+                        await this.clickSeeResults();
+                        await Utils.delay(1500);
+
+                        await this.loadAllResults();
+                        await Utils.delay(1000);
+
+                        const calls = await this.collectCalls();
+
+                        this.updateStatus('Envoi...', 95);
+                        Utils.sendToParent({
+                            type: 'LTOA_AIRCALL_RESPONSE',
+                            success: true,
+                            calls: calls,
+                            user: request.user,
+                            date: request.date,
+                            collectionStatus: 'partial',
+                            collectionSource: 'dashboard'
+                        });
+
+                        this.updateStatus(`✅ ${calls.length} appels !`, 100);
+
+                        await Utils.delay(2000);
+                        if (request.autoclose) window.close();
+
+                    } catch (e) {
+                        Utils.log('ERREUR:', e);
+                        this.updateStatus(`❌ ${e.message}`, 0);
+                        Utils.sendToParent({ type: 'LTOA_AIRCALL_RESPONSE', success: false, error: e.message });
+                    }
+                },
+
+                init() {
+                Utils.log('=== AIRCALL intégré v3.1.0 ===');
+                    const params = Utils.getLtoaParams();
+                    if (params) setTimeout(() => this.start(params), 2000);
+                }
+            };
+
+            AircallCollector.init();
+        })();
+        return;
+    }
     // ============================================
     // CONFIGURATION
     // ============================================
@@ -37,7 +593,17 @@
         DELAY_BETWEEN_REQUESTS: 600,
         DELAY_EMAIL_BODY: 800,
         MAX_PAGES_TO_CHECK: 10,
+
+        // Configuration Aircall
+        AIRCALL_ENABLED: true,
+        AIRCALL_TIMEOUT: 900000, // jusqu'à 15 minutes si de nombreux appels sont enrichis
     };
+
+    // ============================================
+    // DATE SÉLECTIONNÉE POUR LE RAPPORT
+    // ============================================
+    let SELECTED_REPORT_DATE = null; // Format: DD/MM/YYYY ou null pour aujourd'hui
+    let REPORT_NOTES = '';
 
     // ============================================
     // MAPPING DES UTILISATEURS
@@ -415,12 +981,52 @@
             }
         },
 
+        // Retourne la date du rapport (sélectionnée ou aujourd'hui)
         getTodayDate: () => {
+            // Si une date est sélectionnée, l'utiliser
+            if (SELECTED_REPORT_DATE) {
+                return SELECTED_REPORT_DATE;
+            }
+            // Sinon, date du jour
             const today = new Date();
             const day = String(today.getDate()).padStart(2, '0');
             const month = String(today.getMonth() + 1).padStart(2, '0');
             const year = today.getFullYear();
             return `${day}/${month}/${year}`;
+        },
+
+        // Retourne la date réelle d'aujourd'hui (pour comparaisons)
+        getRealTodayDate: () => {
+            const today = new Date();
+            const day = String(today.getDate()).padStart(2, '0');
+            const month = String(today.getMonth() + 1).padStart(2, '0');
+            const year = today.getFullYear();
+            return `${day}/${month}/${year}`;
+        },
+
+        // Retourne J-1 par rapport à la date du rapport
+        getYesterdayFromReportDate: () => {
+            let baseDate;
+            if (SELECTED_REPORT_DATE) {
+                // Parser la date sélectionnée DD/MM/YYYY
+                const parts = SELECTED_REPORT_DATE.split('/');
+                baseDate = new Date(parseInt(parts[2]), parseInt(parts[1]) - 1, parseInt(parts[0]));
+            } else {
+                baseDate = new Date();
+            }
+            baseDate.setDate(baseDate.getDate() - 1);
+            const day = String(baseDate.getDate()).padStart(2, '0');
+            const month = String(baseDate.getMonth() + 1).padStart(2, '0');
+            const year = baseDate.getFullYear();
+            return `${day}/${month}/${year}`;
+        },
+
+        // Convertir DD/MM/YYYY en objet Date
+        parseDate: (dateStr) => {
+            if (!dateStr) return null;
+            const parts = dateStr.split('/');
+            if (parts.length !== 3) return null;
+            return new Date(parseInt(parts[2]), parseInt(parts[1]) - 1, parseInt(parts[0]));
         },
 
         // Nettoyer le texte (enlever les \r\n\t, balises HTML, entités, caractères spéciaux)
@@ -444,9 +1050,10 @@
             result = result.replace(/&lt;/g, '<');
             result = result.replace(/&gt;/g, '>');
             result = result.replace(/&quot;/g, '"');
-            result = result.replace(/&#39;/g, "'");
+            result = result.replace(/&#0*39;/g, "'"); // &#39; ou &#039;
             result = result.replace(/&apos;/g, "'");
-            result = result.replace(/&#(\d+);/g, (match, dec) => String.fromCharCode(dec));
+            result = result.replace(/&#0*34;/g, '"'); // &#34; ou &#034;
+            result = result.replace(/&#(\d+);/g, (match, dec) => String.fromCharCode(parseInt(dec)));
             result = result.replace(/&#x([0-9a-f]+);/gi, (match, hex) => String.fromCharCode(parseInt(hex, 16)));
 
             // Étape 4: Nettoyer les séquences d'échappement littérales (comme dans le texte "\n")
@@ -592,7 +1199,13 @@
         // Traduire une valeur
         translateValue: (value) => {
             if (value === null || value === undefined || value === '-') return '-';
-            const strValue = String(value).trim();
+            let strValue = String(value).trim();
+            // Nettoyer les balises HTML si présentes
+            if (strValue.includes('<') && strValue.includes('>')) {
+                strValue = Utils.cleanText(strValue);
+            }
+            // Décoder les entités HTML
+            strValue = strValue.replace(/&#0*39;/g, "'").replace(/&#0*34;/g, '"').replace(/&amp;/g, '&');
             return TRANSLATIONS.values[strValue] || strValue;
         },
 
@@ -693,13 +1306,17 @@
         async collect(connectedUser, updateLoader) {
             Utils.log('Collecte des emails envoyés...');
             const results = [];
-            const today = Utils.getTodayDate();
+            const reportDate = Utils.getTodayDate(); // Date du rapport (peut être dans le passé)
+            const reportDateObj = Utils.parseDate(reportDate);
+
             let currentPage = 1;
             let hasMorePages = true;
             let emailCount = 0;
+            let foundReportDateEmails = false;
+            let passedReportDate = false; // True quand on a dépassé la date du rapport (emails plus anciens)
 
             try {
-                while (hasMorePages && currentPage <= CONFIG.MAX_PAGES_TO_CHECK) {
+                while (hasMorePages && currentPage <= CONFIG.MAX_PAGES_TO_CHECK && !passedReportDate) {
                     updateLoader(`Emails envoyés - Page ${currentPage}...`);
 
                     // URL des emails envoyés
@@ -709,9 +1326,14 @@
 
                     // Les lignes principales sont s_main_XXXX (pas e_main_)
                     const emailRows = doc.querySelectorAll('tr[id^="s_main_"]');
-                    let foundTodayEmails = false;
 
                     Utils.log(`Page ${currentPage}: ${emailRows.length} emails trouvés`);
+
+                    if (emailRows.length === 0) {
+                        Utils.log('Aucun email trouvé, fin de la collecte');
+                        hasMorePages = false;
+                        break;
+                    }
 
                     for (const row of emailRows) {
                         // Récupérer toutes les cellules td avec data-sent_email_id
@@ -723,58 +1345,80 @@
                         const dateSpan = dateCell.querySelector('span.middle_fade');
                         const dateText = dateSpan ? dateSpan.textContent.trim() : '';
 
-                        Utils.log(`Email date: "${dateText}", today: "${today}"`);
+                        // Extraire la date au format DD/MM/YYYY
+                        const dateMatch = dateText.match(/(\d{2}\/\d{2}\/\d{4})/);
+                        const emailDate = dateMatch ? dateMatch[1] : '';
+                        const emailDateObj = Utils.parseDate(emailDate);
 
-                        if (dateText.includes(today)) {
-                            foundTodayEmails = true;
-                            emailCount++;
+                        // Extraire l'heure au format HH:MM
+                        const timeMatch = dateText.match(/(\d{1,2}):(\d{2})/);
+                        const emailTime = timeMatch ? `${timeMatch[1].padStart(2, '0')}:${timeMatch[2]}` : '';
 
-                            // ID de l'email
-                            const emailId = dateCell.getAttribute('data-sent_email_id');
+                        Utils.log(`Email date: "${emailDate}", reportDate: "${reportDate}"`);
 
-                            // 3ème cellule = Destinataire (index 2)
-                            const toCell = cells[2];
-                            const toSpan = toCell.querySelector('span.middle_fade');
-                            const toEmail = toSpan ? toSpan.textContent.trim() : 'N/A';
-
-                            // Objet - dans la ligne de détails s_details_XXXX
-                            const detailsRow = doc.querySelector(`#s_details_${emailId}`);
-                            let subject = 'N/A';
-                            if (detailsRow) {
-                                const subjectTd = detailsRow.querySelector('td[data-sent_email_id]');
-                                if (subjectTd) {
-                                    subject = subjectTd.textContent.trim();
-                                }
+                        // Comparer les dates
+                        if (emailDateObj && reportDateObj) {
+                            // Si l'email est APRÈS la date du rapport → continuer (pas encore arrivé)
+                            if (emailDateObj > reportDateObj) {
+                                Utils.log(`  Email plus récent que ${reportDate}, on continue...`);
+                                continue;
                             }
 
-                            // Pièce jointe
-                            const hasAttachment = !!row.querySelector('.fa-paperclip');
+                            // Si l'email est à la date du rapport → collecter
+                            if (emailDate === reportDate) {
+                                foundReportDateEmails = true;
+                                emailCount++;
 
-                            // Récupérer le corps de l'email
-                            updateLoader(`Lecture email ${emailCount}...`);
-                            const body = await this.getEmailBody(emailId);
-                            await Utils.delay(CONFIG.DELAY_EMAIL_BODY);
+                                // ID de l'email
+                                const emailId = dateCell.getAttribute('data-sent_email_id');
 
-                            results.push({
-                                id: emailId,
-                                date: dateText,
-                                toEmail: toEmail,
-                                subject: subject,
-                                body: body,
-                                hasAttachment: hasAttachment
-                            });
+                                // 3ème cellule = Destinataire (index 2)
+                                const toCell = cells[2];
+                                const toSpan = toCell.querySelector('span.middle_fade');
+                                const toEmail = toSpan ? toSpan.textContent.trim() : 'N/A';
 
-                            Utils.log(`Email collecté: ${emailId} -> ${toEmail} | ${subject}`);
-                        } else if (foundTodayEmails) {
-                            // On a dépassé les emails du jour
-                            hasMorePages = false;
-                            break;
+                                // Objet - dans la ligne de détails s_details_XXXX
+                                const detailsRow = doc.querySelector(`#s_details_${emailId}`);
+                                let subject = 'N/A';
+                                if (detailsRow) {
+                                    const subjectTd = detailsRow.querySelector('td[data-sent_email_id]');
+                                    if (subjectTd) {
+                                        subject = subjectTd.textContent.trim();
+                                    }
+                                }
+
+                                // Pièce jointe
+                                const hasAttachment = !!row.querySelector('.fa-paperclip');
+
+                                // Récupérer le corps de l'email
+                                updateLoader(`Lecture email ${emailCount}...`);
+                                const body = await this.getEmailBody(emailId);
+                                await Utils.delay(CONFIG.DELAY_EMAIL_BODY);
+
+                                results.push({
+                                    id: emailId,
+                                    date: dateText,
+                                    time: emailTime,
+                                    toEmail: toEmail,
+                                    subject: subject,
+                                    body: body,
+                                    hasAttachment: hasAttachment
+                                });
+
+                                Utils.log(`Email collecté: ${emailId} -> ${toEmail} | ${subject}`);
+                            }
+                            // Si l'email est AVANT la date du rapport → on a dépassé, arrêter
+                            else if (emailDateObj < reportDateObj) {
+                                Utils.log(`Email ${emailDate} antérieur à ${reportDate}, arrêt`);
+                                passedReportDate = true;
+                                break;
+                            }
                         }
                     }
 
-                    // Vérifier pagination
+                    // Vérifier pagination - continuer tant qu'on n'a pas dépassé la date du rapport
                     const nextPageLink = doc.querySelector(`a[href*="sent_email_page=${currentPage + 1}"]`);
-                    if (!nextPageLink || emailRows.length === 0 || !foundTodayEmails) {
+                    if (!nextPageLink || emailRows.length === 0 || passedReportDate) {
                         hasMorePages = false;
                     } else {
                         currentPage++;
@@ -782,7 +1426,7 @@
                     }
                 }
 
-                Utils.log(`Total: ${results.length} emails envoyés`);
+                Utils.log(`Total: ${results.length} emails envoyés pour le ${reportDate}`);
             } catch (error) {
                 Utils.log('Erreur collecte emails envoyés:', error);
             }
@@ -855,195 +1499,333 @@
         }
     };
 
+  // ============================================
+    // COLLECTEUR D'EMAILS AFFECTÉS (v4.8.2 - POST+GET)
     // ============================================
-    // COLLECTEUR D'EMAILS AFFECTÉS
-    // ============================================
-    // Parcourt les emails avec filtre "emails traités" activé via POST
-    // Cherche les emails affectés AUJOURD'HUI par l'utilisateur connecté
     const EmailsAffectedCollector = {
         async collect(connectedUser, updateLoader) {
-            Utils.log('=== COLLECTE EMAILS AFFECTÉS ===');
-            Utils.log('Utilisateur connecté:', connectedUser);
+            console.log('%c=== COLLECTE EMAILS AFFECTÉS (v4.8.2) ===', 'background: #4CAF50; color: white; padding: 5px;');
+            console.log('Utilisateur connecté:', connectedUser);
             const results = [];
-            const today = Utils.getTodayDate();
+            const reportDate = Utils.getTodayDate();
+            console.log('Date du rapport:', reportDate);
 
-            // Calculer J-1 pour parcourir les emails reçus hier aussi
-            const yesterdayObj = new Date();
-            yesterdayObj.setDate(yesterdayObj.getDate() - 1);
-            const yesterday = String(yesterdayObj.getDate()).padStart(2, '0') + '/' +
-                              String(yesterdayObj.getMonth() + 1).padStart(2, '0') + '/' +
-                              yesterdayObj.getFullYear();
-
-            Utils.log('Date du jour:', today);
-            Utils.log('Date J-1:', yesterday);
-            let currentPage = 1;
-            let hasMorePages = true;
-            let stopSearch = false;
+            const MAX_PAGES = 20;
 
             try {
-                while (hasMorePages && currentPage <= CONFIG.MAX_PAGES_TO_CHECK && !stopSearch) {
-                    updateLoader(`Emails affectés - Page ${currentPage}...`);
+                // 1. POST pour activer le filtre
+                updateLoader('Activation filtre emails...');
+                await fetch('https://courtage.modulr.fr/fr/scripts/emails/emails_list.php', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/x-www-form-urlencoded'},
+                    body: 'action=filter&emails_filters%5Bshow_associated_emails%5D=1&mailbox_id=all',
+                    credentials: 'include'
+                });
+                console.log('Filtre activé');
 
-                    // Utiliser POST pour activer le filtre "Voir les emails traités"
-                    const baseUrl = 'https://courtage.modulr.fr/fr/scripts/emails/emails_list.php';
-                    const params = new URLSearchParams();
-                    params.append('email_page', currentPage);
-                    params.append('emails_filters[show_associated_emails]', '1');
+                // 2. GET toutes les pages en parallèle
+                updateLoader(`Emails affectés - Pages 1-${MAX_PAGES}...`);
 
-                    Utils.log(`POST emails page ${currentPage}: ${baseUrl}`);
+                const promises = [];
+                for (let page = 1; page <= MAX_PAGES; page++) {
+                    promises.push(
+                        fetch(`https://courtage.modulr.fr/fr/scripts/emails/emails_list.php?email_page=${page}`, {
+                            credentials: 'include'
+                        })
+                        .then(r => r.text())
+                        .then(html => ({ page, html }))
+                        .catch(err => ({ page, html: '', error: err }))
+                    );
+                }
 
-                    const html = await Utils.fetchPagePost(baseUrl, params.toString());
+                const responses = await Promise.all(promises);
+
+                // 3. Traiter les résultats (triés par page)
+                responses.sort((a, b) => a.page - b.page);
+
+                for (const { page, html, error } of responses) {
+                    if (error || !html) continue;
+
                     const doc = Utils.parseHTML(html);
-
-                    // Chercher les lignes d'emails - format e_main_XXXX
                     const emailRows = doc.querySelectorAll('tr[id^="e_main_"]');
-                    Utils.log(`Page ${currentPage}: ${emailRows.length} lignes d'emails trouvées`);
-
-                    if (emailRows.length === 0) {
-                        Utils.log('Aucune ligne trouvée, fin de la collecte');
-                        hasMorePages = false;
-                        break;
-                    }
 
                     for (const row of emailRows) {
                         const emailId = row.id.replace('e_main_', '');
 
-                        // Récupérer la date de RÉCEPTION de l'email
-                        const dateTimeSpan = row.querySelector('span[id^="e_datetime_"]');
-                        let emailReceivedDate = '';
-                        let emailTime = '';
-                        if (dateTimeSpan) {
-                            const dtText = dateTimeSpan.textContent.trim();
-                            const dateMatch = dtText.match(/(\d{2}\/\d{2}\/\d{4})/);
-                            if (dateMatch) emailReceivedDate = dateMatch[1];
-                            const timeMatch = dtText.match(/(\d{1,2}:\d{2})/);
-                            if (timeMatch) emailTime = timeMatch[1];
-                        }
-
-                        // Si email reçu AVANT J-1, on arrête la recherche
-                        if (emailReceivedDate && emailReceivedDate !== today && emailReceivedDate !== yesterday) {
-                            Utils.log(`Email ${emailId} reçu le ${emailReceivedDate} (avant J-1), arrêt recherche`);
-                            stopSearch = true;
-                            break;
-                        }
-
-                        // Chercher l'info d'affectation dans span.hidden
-                        // Pattern HTML: <span class="hidden">Affecté à NOM, Prénom  par PRENOM NOM le DD/MM/YYYY</span>
                         let affectedTo = '';
                         let affectedDate = '';
                         let affectedBy = '';
 
-                        // Chercher dans tous les span.hidden de la ligne
                         const hiddenSpans = row.querySelectorAll('span.hidden');
                         for (const span of hiddenSpans) {
-                            const txt = span.textContent || '';
-                            // Regex avec espaces variables entre les parties
-                            const match = txt.match(/Affecté\s+à\s+(.+?)\s{1,}par\s+(.+?)\s+le\s+(\d{2}\/\d{2}\/\d{4})/i);
+                            const txt = span.textContent.trim();
+                            const match = txt.match(/Affecté\s+à\s+(.+?)\s+par\s+(.+?)\s+le\s+(\d{2}\/\d{2}\/\d{4})/i);
                             if (match) {
                                 affectedTo = match[1].trim();
                                 affectedBy = match[2].trim();
                                 affectedDate = match[3];
-                                Utils.log(`  Email ${emailId}: trouvé dans span.hidden - à "${affectedTo}" par "${affectedBy}" le ${affectedDate}`);
                                 break;
                             }
                         }
 
-                        // Fallback: chercher dans tout le HTML de la ligne
-                        if (!affectedBy) {
-                            const rowHtml = row.innerHTML;
-                            const match = rowHtml.match(/Affecté\s+à\s+([^<]+?)\s+par\s+([^<]+?)\s+le\s+(\d{2}\/\d{2}\/\d{4})/i);
-                            if (match) {
-                                affectedTo = match[1].trim();
-                                affectedBy = match[2].trim();
-                                affectedDate = match[3];
-                                Utils.log(`  Email ${emailId}: trouvé dans HTML - à "${affectedTo}" par "${affectedBy}" le ${affectedDate}`);
-                            }
-                        }
+                        if (!affectedBy) continue;
+                        if (affectedDate !== reportDate) continue;
 
-                        // Si pas d'info d'affectation, passer au suivant
-                        if (!affectedBy) {
-                            continue;
-                        }
-
-                        // Vérifier si affecté PAR l'utilisateur connecté
+                        // Filtre par utilisateur
                         const userLower = connectedUser.toLowerCase().trim();
                         const byLower = affectedBy.toLowerCase().trim();
 
                         let isMatch = (byLower === userLower);
                         if (!isMatch) isMatch = byLower.includes(userLower) || userLower.includes(byLower);
                         if (!isMatch) {
-                            // Match par parties du nom
-                            const byParts = byLower.split(/\s+/);
-                            const userParts = userLower.split(/\s+/);
-                            for (const bp of byParts) {
-                                if (bp.length > 2 && userParts.some(up => up === bp)) {
-                                    isMatch = true;
-                                    break;
-                                }
-                            }
+    const byParts = byLower.split(/[\s,]+/).filter(p => p.length > 2);
+    const userParts = userLower.split(/[\s,]+/).filter(p => p.length > 2);
+
+    // Exiger que le PRÉNOM corresponde (pas juste le nom de famille)
+    if (byParts.length > 0 && userParts.length > 0) {
+        const byFirstName = byParts[0];
+        const userFirstName = userParts[0];
+        if (byFirstName === userFirstName ||
+            byFirstName.includes(userFirstName) ||
+            userFirstName.includes(byFirstName)) {
+            isMatch = true;
+        }
+    }
+}
+
+                        if (!isMatch) continue;
+
+                        const dateTimeSpan = row.querySelector('span[id^="e_datetime_"]');
+                        let emailTime = '';
+                        if (dateTimeSpan) {
+                            const timeMatch = dateTimeSpan.textContent.match(/(\d{1,2}:\d{2})/);
+                            if (timeMatch) emailTime = timeMatch[1];
                         }
 
-                        if (!isMatch) {
-                            Utils.log(`    -> Pas match: "${affectedBy}" != "${connectedUser}"`);
-                            continue;
-                        }
-                        Utils.log(`    -> MATCH utilisateur!`);
-
-                        // Vérifier que la date d'AFFECTATION est AUJOURD'HUI
-                        if (affectedDate !== today) {
-                            Utils.log(`    -> Date affectation ${affectedDate} != ${today}, ignoré`);
-                            continue;
-                        }
-
-                        // Collecter les infos de l'email
                         const fromSpan = row.querySelector('span[id^="e_from_"]');
                         const fromText = fromSpan ? fromSpan.textContent.trim() : 'N/A';
 
+                        let fromEmail = '';
                         const emailInput = row.querySelector('input.association_email_email');
-                        const fromEmail = emailInput ? emailInput.value : '';
+                        if (emailInput) fromEmail = emailInput.value;
 
                         let subject = 'N/A';
-                        const detailsRow = doc.querySelector(`#e_details_${emailId}`);
-                        if (detailsRow) {
-                            const subjectTd = detailsRow.querySelector('td[id^="e_subject_"]');
-                            if (subjectTd) subject = subjectTd.textContent.trim();
-                        }
-                        if (subject === 'N/A') {
-                            const subjectInput = row.querySelector('input.association_email_subject');
-                            if (subjectInput) subject = subjectInput.value || 'N/A';
-                        }
+                        const subjectInput = row.querySelector('input.association_email_subject');
+                        if (subjectInput && subjectInput.value) subject = subjectInput.value;
 
-                        results.push({
-                            id: emailId,
-                            date: affectedDate,
-                            time: emailTime,
-                            from: fromText,
-                            fromEmail: fromEmail,
-                            subject: subject,
-                            affectedTo: affectedTo,
-                            hasAttachment: !!row.querySelector('.fa-paperclip')
-                        });
-
-                        Utils.log(`Email affecté collecté: ${emailId} - Reçu ${emailReceivedDate} - Affecté ${affectedDate} - De: ${fromText} - À: ${affectedTo}`);
-                    }
-
-                    // Pagination
-                    if (!stopSearch) {
-                        currentPage++;
-                        if (currentPage > CONFIG.MAX_PAGES_TO_CHECK) {
-                            hasMorePages = false;
-                        } else {
-                            await Utils.delay(CONFIG.DELAY_BETWEEN_REQUESTS);
+                        if (!results.find(r => r.id === emailId)) {
+                            results.push({
+                                id: emailId,
+                                date: affectedDate,
+                                time: emailTime,
+                                from: fromText,
+                                fromEmail: fromEmail,
+                                subject: subject,
+                                affectedTo: affectedTo,
+                                hasAttachment: !!row.querySelector('.fa-paperclip')
+                            });
+                            console.log(`%c  ✓ Page ${page}: ${emailId} → ${affectedTo}`, 'color: #4CAF50');
                         }
                     }
                 }
 
-                Utils.log(`Total: ${results.length} emails affectés par ${connectedUser} aujourd'hui`);
+                console.log(`%c=== RÉSULTAT: ${results.length} emails ===`, 'background: #4CAF50; color: white; padding: 5px;');
             } catch (error) {
-                Utils.log('Erreur collecte emails affectés:', error);
+                console.error('Erreur collecte emails affectés:', error);
             }
 
             return results;
+        }
+    };
+
+    // ============================================
+    // COLLECTEUR NOMBRE D'EMAILS EN ATTENTE
+    // ============================================
+    // Récupère le nombre d'emails assignés (en attente) pour l'utilisateur
+    // depuis la liste des utilisateurs dans le menu d'affectation
+    const PendingEmailsCollector = {
+        async collect(connectedUser, updateLoader) {
+            Utils.log('=== COLLECTE EMAILS EN ATTENTE ===');
+            Utils.log('Utilisateur recherché:', connectedUser);
+
+            try {
+                updateLoader('Récupération emails en attente...');
+
+                // Charger la page des emails SANS filtre (pour voir les non traités)
+                const url = 'https://courtage.modulr.fr/fr/scripts/emails/emails_list.php?email_page=1';
+                const html = await Utils.fetchPage(url);
+                const doc = Utils.parseHTML(html);
+
+                // Chercher dans les liens d'affectation le pattern "NOM (XX)"
+                // Le lien peut être /emails/assign/ ou /intranet/emails/assign/
+                const assignLinks = doc.querySelectorAll('a[href*="emails/assign"]');
+                Utils.log(`${assignLinks.length} liens d'affectation trouvés`);
+
+                const userLower = connectedUser.toLowerCase().trim();
+                const userParts = userLower.split(/[\s,]+/).filter(p => p.length > 2);
+                let pendingCount = 0;
+                let foundUser = false;
+
+                for (const link of assignLinks) {
+                    // Récupérer le texte en nettoyant les espaces et caractères spéciaux
+                    let text = link.textContent.trim();
+                    // Supprimer les espaces multiples et &nbsp;
+                    text = text.replace(/\s+/g, ' ').trim();
+
+                    Utils.log(`  Lien brut: "${text}"`);
+
+                    // Pattern: "Nom Prénom (XX)" - chercher le nombre entre parenthèses
+                    // Le nom peut contenir des espaces, donc on cherche tout avant les parenthèses
+                    const match = text.match(/^(.+?)\s*\((\d+)\)\s*$/);
+                    if (match) {
+                        const userName = match[1].trim();
+                        const count = parseInt(match[2]);
+                        const nameLower = userName.toLowerCase().trim();
+
+                        Utils.log(`    Parsé: nom="${userName}", count=${count}`);
+
+                        // Vérifier si c'est l'utilisateur connecté
+                        let isMatch = false;
+
+                        // Match exact
+                        if (nameLower === userLower) {
+                            isMatch = true;
+                            Utils.log(`    -> Match exact`);
+                        }
+                        // Match inclusion
+                        if (!isMatch && (nameLower.includes(userLower) || userLower.includes(nameLower))) {
+                            isMatch = true;
+                            Utils.log(`    -> Match inclusion`);
+                        }
+                        // Match par parties du nom (prénom OU nom)
+                        if (!isMatch) {
+                            const nameParts = nameLower.split(/[\s,]+/).filter(p => p.length > 2);
+                            let matchedParts = 0;
+                            for (const np of nameParts) {
+                                for (const up of userParts) {
+                                    if (np === up) {
+                                        matchedParts++;
+                                        break;
+                                    }
+                                }
+                            }
+                            // Si au moins une partie du nom correspond
+                            if (matchedParts > 0) {
+                                isMatch = true;
+                                Utils.log(`    -> Match par parties (${matchedParts} correspondances)`);
+                            }
+                        }
+
+                        if (isMatch) {
+                            pendingCount = count;
+                            foundUser = true;
+                            Utils.log(`✓ MATCH TROUVÉ: "${userName}" = ${pendingCount} emails en attente`);
+                            break; // Prendre le premier match
+                        }
+                    } else {
+                        Utils.log(`    -> Pas de pattern (XX) trouvé`);
+                    }
+                }
+
+                if (!foundUser) {
+                    Utils.log(`✗ Aucun match trouvé pour "${connectedUser}" parmi les ${assignLinks.length} liens`);
+                }
+
+                Utils.log(`=== RÉSULTAT: ${pendingCount} emails en attente ===`);
+                return pendingCount;
+
+            } catch (error) {
+                Utils.log('Erreur collecte emails en attente:', error);
+                return 0;
+            }
+        }
+    };
+
+    // ============================================
+    // COLLECTEUR D'APPELS AIRCALL
+    // ============================================
+    // Communique avec le script Aircall via URL params et postMessage
+    const AircallCollector = {
+        aircallWindow: null,
+        lastStatus: { state: 'not_started', source: null, message: '' },
+
+        async collect(connectedUser, updateLoader) {
+            if (!CONFIG.AIRCALL_ENABLED) {
+                Utils.log('Aircall désactivé dans la config');
+                return [];
+            }
+
+            Utils.log('=== COLLECTE APPELS AIRCALL ===');
+            Utils.log('Utilisateur:', connectedUser);
+            const reportDate = Utils.getTodayDate();
+
+            return new Promise((resolve) => {
+                updateLoader('Ouverture de Aircall...');
+
+                // Encoder les paramètres dans l'URL
+                const params = new URLSearchParams({
+                    ltoa_user: connectedUser,
+                    ltoa_date: reportDate,
+                    ltoa_autoclose: 'true',
+                    ltoa_timestamp: Date.now().toString()
+                });
+
+                const aircallUrl = `https://dashboard.aircall.io/conversations?${params.toString()}`;
+                Utils.log('Ouverture Aircall:', aircallUrl);
+
+                // Écouter les messages de l'onglet Aircall
+                const messageHandler = (event) => {
+                    // Vérifier l'origine
+                    if (!event.origin.includes('aircall.io')) return;
+
+                    const data = event.data;
+                    if (data && data.type === 'LTOA_AIRCALL_RESPONSE') {
+                        Utils.log('Réponse Aircall reçue via postMessage:', data);
+
+                        // Nettoyer
+                        window.removeEventListener('message', messageHandler);
+                        clearTimeout(timeoutId);
+
+                        if (data.success) {
+                            this.lastStatus = {
+                                state: data.collectionStatus || 'partial',
+                                source: data.collectionSource || 'dashboard',
+                                message: data.collectionStatus === 'complete'
+                                    ? 'Collecte API complète'
+                                    : 'Collecte visuelle : résultat potentiellement partiel'
+                            };
+                            Utils.log(`${data.calls.length} appels reçus d'Aircall`);
+                            resolve(data.calls || []);
+                        } else {
+                            this.lastStatus = { state: 'error', source: null, message: data.error || 'Erreur Aircall' };
+                            Utils.log('Erreur Aircall:', data.error);
+                            resolve([]);
+                        }
+                    } else if (data && data.type === 'LTOA_AIRCALL_STATUS') {
+                        updateLoader(`Aircall: ${data.message}`);
+                    }
+                };
+
+                window.addEventListener('message', messageHandler);
+
+                // Ouvrir Aircall dans un nouvel onglet
+                this.aircallWindow = window.open(aircallUrl, 'ltoa_aircall', 'width=1200,height=800');
+
+                // Si le popup est bloqué, ouvrir normalement
+                if (!this.aircallWindow) {
+                    Utils.log('Popup bloqué, ouverture normale...');
+                    GM_openInTab(aircallUrl, { active: true, insert: true });
+                }
+
+                // Timeout
+                const timeoutId = setTimeout(() => {
+                    Utils.log('Timeout Aircall (2 minutes)');
+                    window.removeEventListener('message', messageHandler);
+                    updateLoader('Timeout Aircall - rapport sans appels');
+                    this.lastStatus = { state: 'error', source: null, message: 'Délai Aircall dépassé : zéro non fiable' };
+                    resolve([]);
+                }, CONFIG.AIRCALL_TIMEOUT);
+            });
         }
     };
 
@@ -1135,17 +1917,31 @@
                             await Utils.delay(CONFIG.DELAY_BETWEEN_REQUESTS);
                         }
 
-                        // Parser les infos de création
+                        // Parser les infos de création et dernière modification
                         let createdBy = 'N/A', createdDate = 'N/A';
+                        let closedTime = ''; // Heure de clôture = dernière modification
+                        let closedBy = '';
                         const hiddenDiv = row.querySelector('.hidden');
                         if (hiddenDiv) {
                             const text = hiddenDiv.innerHTML;
+                            // Extraction création
                             const creationMatch = text.match(/Création<\/p>\s*<p[^>]*>([^<]+)/);
                             if (creationMatch) {
                                 const parts = creationMatch[1].trim().match(/(.+) (\d{2}\/\d{2}\/\d{4})/);
                                 if (parts) {
                                     createdBy = parts[1].trim();
                                     createdDate = parts[2];
+                                }
+                            }
+                            // Extraction dernière modification (= heure de clôture)
+                            const modifMatch = text.match(/Derni[èe]re modification<\/p>\s*<p[^>]*>([^<]+)/i);
+                            if (modifMatch) {
+                                // Format: "NOM PRENOM DD/MM/YYYY HH:MM:SS"
+                                const modifParts = modifMatch[1].trim().match(/(.+?)\s+(\d{2}\/\d{2}\/\d{4})\s+(\d{2}:\d{2})/);
+                                if (modifParts) {
+                                    closedBy = modifParts[1].trim();
+                                    closedTime = modifParts[3]; // HH:MM
+                                    Utils.log(`Tâche ${taskId}: Clôturée à ${closedTime} par ${closedBy}`);
                                 }
                             }
                         }
@@ -1158,6 +1954,9 @@
                             clientId: clientLink ? (clientLink.href.match(/id=(\d+)/) || [])[1] : null,
                             assignedTo: connectedUser,
                             completedDate: completedDate,
+                            time: closedTime, // Heure de clôture pour la vue chronologique
+                            closedTime: closedTime,
+                            closedBy: closedBy,
                             createdBy,
                             createdDate,
                             isPriority: !!row.querySelector('.fa-exclamation'),
@@ -1357,10 +2156,18 @@
             if (isNaN(day) || isNaN(month) || isNaN(year)) return 0;
 
             const dueDate = new Date(year, month, day);
-            const today = new Date();
-            today.setHours(0, 0, 0, 0);
 
-            const diffTime = today - dueDate;
+            // Utiliser la date du rapport pour calculer le retard
+            let reportDate;
+            if (SELECTED_REPORT_DATE) {
+                const rParts = SELECTED_REPORT_DATE.split('/');
+                reportDate = new Date(parseInt(rParts[2]), parseInt(rParts[1]) - 1, parseInt(rParts[0]));
+            } else {
+                reportDate = new Date();
+            }
+            reportDate.setHours(0, 0, 0, 0);
+
+            const diffTime = reportDate - dueDate;
             const diffDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24));
 
             return diffDays > 0 ? diffDays : 0;
@@ -1376,10 +2183,10 @@
             const results = [];
             let currentPage = 1;
             let hasMorePages = true;
-            const MAX_LOG_PAGES = 20; // Limite de sécurité
+            const pageFingerprints = new Set();
 
             try {
-                while (hasMorePages && currentPage <= MAX_LOG_PAGES) {
+                while (hasMorePages) {
                     if (updateLoader) updateLoader(`${tableLabel} - Page ${currentPage}...`);
 
                     const baseUrl = 'https://courtage.modulr.fr/fr/scripts/UsersLogs/UsersLogsList.php';
@@ -1409,6 +2216,17 @@
 
                     const rows = tableEl.querySelectorAll('tr');
                     Utils.log(`Page ${currentPage}: ${rows.length} lignes pour ${tableLabel}`);
+
+                    const fingerprint = Array.from(rows)
+                        .filter(row => row.classList.contains('color_grey_3'))
+                        .slice(0, 5)
+                        .map(row => row.textContent.replace(/\s+/g, ' ').trim())
+                        .join('|');
+                    if (fingerprint && pageFingerprints.has(fingerprint)) {
+                        Utils.log(`Page ${currentPage} identique à une page précédente : arrêt sécurisé.`);
+                        break;
+                    }
+                    if (fingerprint) pageFingerprints.add(fingerprint);
 
                     // Compter les entrées ajoutées sur cette page
                     let entriesThisPage = 0;
@@ -1507,10 +2325,10 @@
             const today = Utils.getTodayDate();
             let currentPage = 1;
             let hasMorePages = true;
-            const MAX_LOG_PAGES = 20;
+            const pageFingerprints = new Set();
 
             try {
-                while (hasMorePages && currentPage <= MAX_LOG_PAGES) {
+                while (hasMorePages) {
                     updateLoader(`Journalisation générale - Page ${currentPage}...`);
 
                     const baseUrl = 'https://courtage.modulr.fr/fr/scripts/UsersLogs/UsersLogsList.php';
@@ -1538,6 +2356,17 @@
 
                     const rows = tableEl.querySelectorAll('tr');
                     Utils.log(`Page ${currentPage}: ${rows.length} lignes pour logs généraux`);
+
+                    const fingerprint = Array.from(rows)
+                        .filter(row => row.classList.contains('color_grey_3'))
+                        .slice(0, 5)
+                        .map(row => row.textContent.replace(/\s+/g, ' ').trim())
+                        .join('|');
+                    if (fingerprint && pageFingerprints.has(fingerprint)) {
+                        Utils.log(`Page ${currentPage} répétée par Modulr : arrêt sécurisé.`);
+                        break;
+                    }
+                    if (fingerprint) pageFingerprints.add(fingerprint);
 
                     let entriesThisPage = 0;
                     let currentEntry = null;
@@ -1620,7 +2449,36 @@
                 Utils.log('Erreur collecte journalisation générale:', error);
             }
 
-            return results;
+            return this.keepUsefulUniqueLogs(results);
+        },
+
+        // La journalisation brute contient aussi les emails, tâches, devis, contrats
+        // et sinistres déjà affichés dans leurs rubriques. On ne garde ici que les
+        // événements complémentaires, en supprimant les doublons et le bruit système.
+        keepUsefulUniqueLogs(results) {
+            const alreadyReported = /(^|[^a-z])(tasks?|tâches?|emails?|sent_emails|estimates?|devis|polic(?:y|ies)|contrats?|claims?|sinistres?)([^a-z]|$)/i;
+            const technicalFields = new Set([
+                'last_update', 'last_update_user_id', 'creation_date', 'creation_user_id',
+                'office_id', 'firm_id', 'blob_id', 'uid', 'eml_message_id',
+                'tracking_data_algorithm', 'email_id', 'task_id', 'estimate_id',
+                'policy_id', 'claim_id', 'bank_account_id'
+            ]);
+            const seen = new Set();
+
+            return (results || []).filter(log => {
+                const table = `${log.tableRaw || ''} ${log.table || ''}`.toLowerCase();
+                if (alreadyReported.test(table)) return false;
+
+                log.changes = (log.changes || []).filter(change => !technicalFields.has(change.fieldRaw));
+                const isMeaningfulCreation = /insertion|création|insert/i.test(log.actionRaw || log.action || '');
+                if (!isMeaningfulCreation && log.changes.length === 0) return false;
+
+                const key = [log.actionRaw, log.tableRaw, log.entityId, log.date,
+                    log.changes.map(c => `${c.fieldRaw}:${c.oldValueRaw}:${c.newValueRaw}`).join('|')].join('::');
+                if (seen.has(key)) return false;
+                seen.add(key);
+                return true;
+            });
         },
 
         // Collecter les devis
@@ -2121,6 +2979,7 @@
         data: {
             emailsSent: [],
             emailsAffected: [],
+            aircallCalls: [],
             tasksCompleted: [],
             tasksOverdue: [],
             logs: [],
@@ -2132,7 +2991,25 @@
         },
 
         generateHTML() {
-            const { emailsSent, emailsAffected, tasksCompleted, tasksOverdue, logs, estimates, policies, claims, user, date } = this.data;
+            const { emailsSent, emailsAffected, pendingEmailsCount, aircallCalls, tasksCompleted, tasksOverdue, logs, estimates, policies, claims, user, date, notes, aircallStatus } = this.data;
+
+            // Vérifier si c'est un rapport pour un jour passé
+            const realToday = Utils.getRealTodayDate();
+            const isPastDate = date !== realToday;
+            const dateLabel = isPastDate ? `📅 ${date} <span style="background: #ff9800; color: white; padding: 2px 8px; border-radius: 3px; font-size: 12px; margin-left: 8px;">Rapport rétrospectif</span>` : date;
+
+            // Compteurs Aircall
+            const aircallInbound = (aircallCalls || []).filter(c => c.type === 'entrant').length;
+            const aircallOutbound = (aircallCalls || []).filter(c => c.type === 'sortant').length;
+            const aircallAnswered = (aircallCalls || []).filter(c => c.answered !== false && !c.missedReason).length;
+            const aircallTalkSeconds = (aircallCalls || []).reduce((sum, c) => sum + (Number(c.durationSeconds) || 0), 0);
+            const formatDuration = seconds => `${Math.floor(seconds / 3600)}h ${Math.floor((seconds % 3600) / 60)}min`;
+            const uniqueClients = new Set([
+                ...emailsSent, ...emailsAffected, ...tasksCompleted,
+                ...estimates, ...policies, ...claims, ...logs
+            ].map(item => item.clientId || item.clientName || item.entityId)
+              .filter(value => value && value !== 'N/A' && value !== 'Non associé')).size;
+            const remainingWork = (pendingEmailsCount || 0) + tasksOverdue.length;
 
             // Générer un ID unique pour les toggles
             const uid = Date.now();
@@ -2162,7 +3039,7 @@
                             <div>
                                 <h1 style="color: #c62828; margin: 0; font-size: 24px;">📊 Rapport d'Activité Quotidien</h1>
                                 <p style="color: #666; margin: 5px 0 0 0; font-size: 16px;">
-                                    <strong>${user}</strong> - ${date}
+                                    <strong>${user}</strong> - ${dateLabel}
                                 </p>
                             </div>
                             <div>
@@ -2188,6 +3065,17 @@
                                     margin-right: 8px;
                                     font-weight: bold;
                                 ">🌐 Exporter HTML</button>
+                                <button id="ltoa-view-chrono" style="
+                                    background: #9c27b0;
+                                    color: white;
+                                    border: none;
+                                    padding: 12px 20px;
+                                    border-radius: 5px;
+                                    cursor: pointer;
+                                    font-size: 13px;
+                                    margin-right: 8px;
+                                    font-weight: bold;
+                                ">🕐 Vue Chronologique</button>
                                 <button id="ltoa-close-report" style="
                                     background: #666;
                                     color: white;
@@ -2201,8 +3089,26 @@
                             </div>
                         </div>
 
+                        <div style="margin:-10px 0 25px;padding:12px 16px;border-radius:8px;background:${aircallStatus?.state === 'complete' ? '#e8f5e9' : '#fff3e0'};color:${aircallStatus?.state === 'complete' ? '#1b5e20' : '#e65100'};font-size:12px;">
+                            📞 ${Utils.escapeHtml(aircallStatus?.message || 'Collecte Aircall non vérifiée')}
+                            ${(aircallCalls || []).length ? ` — ${aircallAnswered} répondu(s), ${formatDuration(aircallTalkSeconds)} de durée cumulée` : ''}
+                        </div>
+
+                        <!-- Alerte emails en attente -->
+                        ${(pendingEmailsCount || 0) > 0 ? `
+                        <div style="background: linear-gradient(135deg, #ffcccb 0%, #ff6b6b 100%); padding: 15px 20px; border-radius: 10px; margin-bottom: 20px; display: flex; align-items: center; justify-content: space-between; box-shadow: 0 4px 15px rgba(255, 107, 107, 0.3);">
+                            <div style="display: flex; align-items: center; gap: 15px;">
+                                <div style="font-size: 40px;">📬</div>
+                                <div>
+                                    <div style="font-size: 14px; color: #7f0000; font-weight: bold;">Emails assignés à ${Utils.escapeHtml(user)}</div>
+                                </div>
+                            </div>
+                            <div style="font-size: 48px; font-weight: bold; color: #b71c1c;">${pendingEmailsCount || 0}</div>
+                        </div>
+                        ` : ''}
+
                         <!-- Résumé en cartes -->
-                        <div style="display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; margin-bottom: 30px;">
+                        <div style="display: grid; grid-template-columns: repeat(5, 1fr); gap: 12px; margin-bottom: 30px;">
                             <div style="background: linear-gradient(135deg, #e3f2fd 0%, #bbdefb 100%); padding: 15px; border-radius: 10px; text-align: center; box-shadow: 0 2px 10px rgba(25, 118, 210, 0.2);">
                                 <div style="font-size: 28px; font-weight: bold; color: #1976d2;">${emailsSent.length}</div>
                                 <div style="color: #1976d2; font-weight: bold; font-size: 12px;">📤 Emails Envoyés</div>
@@ -2210,6 +3116,10 @@
                             <div style="background: linear-gradient(135deg, #e8f5e9 0%, #c8e6c9 100%); padding: 15px; border-radius: 10px; text-align: center; box-shadow: 0 2px 10px rgba(56, 142, 60, 0.2);">
                                 <div style="font-size: 28px; font-weight: bold; color: #388e3c;">${emailsAffected.length}</div>
                                 <div style="color: #388e3c; font-weight: bold; font-size: 12px;">📥 Emails Affectés</div>
+                            </div>
+                            <div style="background: linear-gradient(135deg, #fff8e1 0%, #ffecb3 100%); padding: 15px; border-radius: 10px; text-align: center; box-shadow: 0 2px 10px rgba(255, 160, 0, 0.2);">
+                                <div style="font-size: 28px; font-weight: bold; color: #ff8f00;">${(aircallCalls || []).length}</div>
+                                <div style="color: #ff8f00; font-weight: bold; font-size: 11px;">📞 Appels (${aircallInbound}↓ ${aircallOutbound}↑)</div>
                             </div>
                             <div style="background: linear-gradient(135deg, #fff3e0 0%, #ffe0b2 100%); padding: 15px; border-radius: 10px; text-align: center; box-shadow: 0 2px 10px rgba(245, 124, 0, 0.2);">
                                 <div style="font-size: 28px; font-weight: bold; color: #f57c00;">${tasksCompleted.length}</div>
@@ -2237,6 +3147,13 @@
                                 <div style="font-size: 28px; font-weight: bold; color: #7b1fa2;">${logs.length}</div>
                                 <div style="color: #7b1fa2; font-weight: bold; font-size: 12px;">📝 Autres Actions</div>
                             </div>
+                        </div>
+
+                        <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:10px;margin:0 0 25px;">
+                            <div style="padding:14px;background:#e3f2fd;border-radius:8px;text-align:center;"><strong style="font-size:22px;color:#1565c0;">${uniqueClients}</strong><br><span style="font-size:11px;color:#455a64;">Dossiers/clients traités</span></div>
+                            <div style="padding:14px;background:#e8f5e9;border-radius:8px;text-align:center;"><strong style="font-size:22px;color:#2e7d32;">${estimates.length + policies.length}</strong><br><span style="font-size:11px;color:#455a64;">Actions de production</span></div>
+                            <div style="padding:14px;background:#fff3e0;border-radius:8px;text-align:center;"><strong style="font-size:22px;color:#ef6c00;">${tasksCompleted.length}</strong><br><span style="font-size:11px;color:#455a64;">Suivis finalisés</span></div>
+                            <div style="padding:14px;background:${remainingWork ? '#ffebee' : '#e8f5e9'};border-radius:8px;text-align:center;"><strong style="font-size:22px;color:${remainingWork ? '#c62828' : '#2e7d32'};">${remainingWork}</strong><br><span style="font-size:11px;color:#455a64;">Éléments restant à traiter</span></div>
                         </div>
 
                         <!-- Section 1: Emails Envoyés -->
@@ -2343,7 +3260,110 @@
                             </div>
                         </div>
 
-                        <!-- Section 3: Tâches Terminées -->
+                        <!-- Section 3: Appels Téléphoniques Aircall -->
+                        <div style="margin-bottom: 30px; border: 1px solid #fff8e1; border-radius: 10px; overflow: hidden;">
+                            <h2 style="background: #ff8f00; color: white; margin: 0; padding: 15px 20px; font-size: 16px;">
+                                📞 Appels Téléphoniques (${(aircallCalls || []).length}) - ${aircallInbound} entrants / ${aircallOutbound} sortants
+                            </h2>
+                            <div style="padding: 15px;">
+                                ${(aircallCalls || []).length > 0 ? `
+                                    ${(aircallCalls || []).map((c, idx) => `
+                                        <div style="background: #fffbf5; border: 1px solid #ffe0b2; border-radius: 8px; padding: 15px; margin-bottom: 12px;">
+                                            <div style="display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 10px;">
+                                                <div style="display: flex; align-items: center; gap: 12px;">
+                                                    <span style="font-size: 24px;">${c.type === 'sortant' ? '📤' : (c.type === 'entrant' ? '📥' : '📞')}</span>
+                                                    <div>
+                                                        <strong style="color: #ff8f00; font-size: 14px;">${Utils.escapeHtml(c.contact || 'Inconnu')}</strong>
+                                                        <br><span style="color: #666; font-size: 12px;">${c.type === 'sortant' ? 'Appel sortant' : (c.type === 'entrant' ? 'Appel entrant' : 'Appel')}</span>
+                                                    </div>
+                                                </div>
+                                                <div style="text-align: right;">
+                                                    <span style="background: #ff8f00; color: white; padding: 4px 12px; border-radius: 12px; font-size: 12px; font-weight: bold;">
+                                                        ${Utils.escapeHtml(c.duration || '0s')}
+                                                    </span>
+                                                    <br><span style="color: #888; font-size: 11px; margin-top: 4px; display: inline-block;">
+                                                        🕐 ${Utils.escapeHtml(c.time || '')}
+                                                    </span>
+                                                </div>
+                                            </div>
+                                            ${c.mood ? `
+                                                <div style="margin-bottom: 10px;">
+                                                    <span style="
+                                                        display: inline-flex;
+                                                        align-items: center;
+                                                        gap: 6px;
+                                                        padding: 4px 10px;
+                                                        border-radius: 15px;
+                                                        font-size: 12px;
+                                                        background: ${c.mood === 'Positif' ? '#e8f5e9' : (c.mood === 'Négatif' ? '#ffebee' : '#f5f5f5')};
+                                                        color: ${c.mood === 'Positif' ? '#2e7d32' : (c.mood === 'Négatif' ? '#c62828' : '#666')};
+                                                        border: 1px solid ${c.mood === 'Positif' ? '#c8e6c9' : (c.mood === 'Négatif' ? '#ffcdd2' : '#e0e0e0')};
+                                                    ">
+                                                        ${c.mood === 'Positif' ? '😊' : (c.mood === 'Négatif' ? '😠' : '😐')} ${c.mood}
+                                                    </span>
+                                                </div>
+                                            ` : ''}
+                                            ${c.summary ? `
+                                                <div style="background: white; border: 1px solid #ffe0b2; border-radius: 6px; padding: 12px; margin-top: 8px;">
+                                                    <div style="color: #888; font-size: 10px; margin-bottom: 6px; display: flex; align-items: center; gap: 5px;">
+                                                        ✨ Résumé IA
+                                                    </div>
+                                                    <div id="call-preview-${uid}-${idx}" style="color: #333; font-size: 12px; line-height: 1.5;">
+                                                        ${Utils.escapeHtml(Utils.truncate(c.summary, 200))}
+                                                    </div>
+                                                    ${c.summary.length > 200 ? `
+                                                        <div id="call-full-${uid}-${idx}" style="display: none; color: #333; font-size: 12px; line-height: 1.5;">
+                                                            ${Utils.escapeHtml(c.summary)}
+                                                        </div>
+                                                        <button onclick="
+                                                            var preview = document.getElementById('call-preview-${uid}-${idx}');
+                                                            var full = document.getElementById('call-full-${uid}-${idx}');
+                                                            if (full.style.display === 'none') {
+                                                                preview.style.display = 'none';
+                                                                full.style.display = 'block';
+                                                                this.textContent = '▲ Réduire';
+                                                            } else {
+                                                                preview.style.display = 'block';
+                                                                full.style.display = 'none';
+                                                                this.textContent = '▼ Voir tout';
+                                                            }
+                                                        " style="
+                                                            background: #fff8e1;
+                                                            border: 1px solid #ff8f00;
+                                                            color: #ff8f00;
+                                                            padding: 3px 8px;
+                                                            border-radius: 3px;
+                                                            cursor: pointer;
+                                                            font-size: 10px;
+                                                            margin-top: 8px;
+                                                        ">▼ Voir tout</button>
+                                                    ` : ''}
+                                                </div>
+                                            ` : ''}
+                                            ${c.topics?.length ? `
+                                                <div style="margin-top:8px;font-size:12px;color:#6d4c00;">
+                                                    <strong>🏷️ Sujets clés :</strong> ${c.topics.map(topic => Utils.escapeHtml(topic)).join(' · ')}
+                                                </div>
+                                            ` : ''}
+                                            ${c.actionItems?.length ? `
+                                                <div style="margin-top:8px;padding:10px;background:#fff3e0;border-radius:6px;font-size:12px;">
+                                                    <strong>✅ Actions à entreprendre</strong>
+                                                    <ul style="margin:6px 0 0 18px;">${c.actionItems.map(action => `<li>${Utils.escapeHtml(action)}</li>`).join('')}</ul>
+                                                </div>
+                                            ` : ''}
+                                            ${c.transcript ? `
+                                                <details style="margin-top:8px;background:white;border:1px solid #ffe0b2;border-radius:6px;padding:10px;">
+                                                    <summary style="cursor:pointer;color:#e65100;font-size:12px;font-weight:bold;">🗣️ Voir la transcription complète</summary>
+                                                    <div style="margin-top:8px;white-space:pre-wrap;font-size:11px;line-height:1.5;max-height:320px;overflow:auto;">${Utils.escapeHtml(c.transcript)}</div>
+                                                </details>
+                                            ` : ''}
+                                        </div>
+                                    `).join('')}
+                                ` : '<p style="color: #666; font-style: italic; text-align: center; padding: 20px;">Aucun appel collecté - <a href="https://dashboard.aircall.io/conversations" target="_blank" style="color: #ff8f00;">Ouvrir Aircall</a></p>'}
+                            </div>
+                        </div>
+
+                        <!-- Section 4: Tâches Terminées -->
                         <div style="margin-bottom: 30px; border: 1px solid #fff3e0; border-radius: 10px; overflow: hidden;">
                             <h2 style="background: #f57c00; color: white; margin: 0; padding: 15px 20px; font-size: 16px;">
                                 ✅ Tâches Terminées (${tasksCompleted.length})
@@ -2358,7 +3378,7 @@
                                                     <br><span style="color: #666; font-size: 12px;">Client: ${Utils.escapeHtml(t.client)}</span>
                                                 </div>
                                                 <span style="background: #f57c00; color: white; padding: 3px 10px; border-radius: 12px; font-size: 11px;">
-                                                    Terminée le ${t.completedDate}
+                                                    ${t.closedTime ? `⏰ ${t.closedTime}` : `Terminée le ${t.completedDate}`}
                                                 </span>
                                             </div>
                                             ${t.content ? `
@@ -2604,12 +3624,14 @@
                             </div>
                         </div>
 
-                        <!-- Section 8: Journalisation (Vulgarisée) -->
+                        <!-- Section 8: Journalisation (Vulgarisée) - RÉDUIT PAR DÉFAUT -->
                         <div style="margin-bottom: 30px; border: 1px solid #f3e5f5; border-radius: 10px; overflow: hidden;">
-                            <h2 style="background: #7b1fa2; color: white; margin: 0; padding: 15px 20px; font-size: 16px;">
-                                📝 Actions sur Fiches Clients (${logs.length})
-                            </h2>
-                            <div style="padding: 15px;">
+                            <details>
+                                <summary style="background: #7b1fa2; color: white; margin: 0; padding: 15px 20px; font-size: 16px; cursor: pointer; list-style: none; display: flex; justify-content: space-between; align-items: center; user-select: none;">
+                                    <span>📝 Actions sur Fiches Clients (${logs.length})</span>
+                                    <span style="font-size: 11px; background: rgba(255,255,255,0.2); padding: 4px 12px; border-radius: 15px;">▶ Cliquer pour voir</span>
+                                </summary>
+                                <div style="padding: 15px; max-height: 600px; overflow-y: auto;">
                                 ${logs.length > 0 ? `
                                     ${logs.map(log => {
                                         // Vulgariser l'entrée
@@ -2686,8 +3708,15 @@
                                     `;
                                     }).join('')}
                                 ` : '<p style="color: #666; font-style: italic; text-align: center; padding: 20px;">Aucune action sur les fiches aujourd\'hui</p>'}
-                            </div>
+                                </div>
+                            </details>
                         </div>
+
+                        ${notes ? `
+                        <div style="margin:25px 0;padding:18px;background:#fffde7;border-left:5px solid #f9a825;border-radius:8px;">
+                            <strong style="color:#6d4c00;">🗒️ Notes et précisions</strong>
+                            <div style="margin-top:10px;white-space:pre-wrap;color:#4e342e;line-height:1.55;">${Utils.escapeHtml(notes)}</div>
+                        </div>` : ''}
 
                         <!-- Footer -->
                         <div style="text-align: center; color: #999; padding-top: 20px; border-top: 1px solid #eee; font-size: 12px;">
@@ -2711,6 +3740,7 @@
 
             document.getElementById('ltoa-view-by-client').addEventListener('click', () => this.showByClientView());
             document.getElementById('ltoa-export-html').addEventListener('click', () => this.exportHTML());
+            document.getElementById('ltoa-view-chrono').addEventListener('click', () => this.showChronoView());
 
             document.addEventListener('keydown', (e) => {
                 if (e.key === 'Escape') {
@@ -2725,7 +3755,11 @@
         // ============================================
         showByClientView() {
             try {
-                const { emailsSent, emailsAffected, tasksCompleted, tasksOverdue, logs, estimates, policies, claims, user, date, clientIndex } = this.data;
+                const { emailsSent, emailsAffected, aircallCalls, tasksCompleted, tasksOverdue, logs, estimates, policies, claims, user, date, clientIndex } = this.data;
+
+                // Vérifier si c'est un rapport pour un jour passé
+                const realToday = Utils.getRealTodayDate();
+                const isPastDate = date !== realToday;
 
                 // Regrouper toutes les données par client (utiliser l'ID client comme clé si disponible)
                 const clientsMap = new Map();
@@ -2749,6 +3783,7 @@
                             email: clientEmail,
                             emailsSent: [],
                             emailsAffected: [],
+                            aircallCalls: [],
                             tasksCompleted: [],
                             tasksOverdue: [],
                             estimates: [],
@@ -2785,6 +3820,53 @@
                     addToClient(clientName, clientId, clientEmail, 'emailsAffected', e);
                 });
 
+                // Appels Aircall - regrouper par nom de contact
+                // Essayer de matcher avec les clients existants (nom entre parenthèses, etc.)
+                (aircallCalls || []).forEach(call => {
+                    const contactName = call.contact || 'Contact inconnu';
+                    const contactLower = contactName.toLowerCase().trim();
+
+                    // Chercher un client existant qui correspond
+                    let matchedKey = null;
+                    clientsMap.forEach((client, key) => {
+                        const clientNameLower = client.name.toLowerCase();
+                        // Match direct
+                        if (clientNameLower.includes(contactLower) || contactLower.includes(clientNameLower)) {
+                            matchedKey = key;
+                        }
+                        // Match avec nom entre parenthèses (ex: "MAUD'AUTO (maude mancini)")
+                        const parenMatch = clientNameLower.match(/\(([^)]+)\)/);
+                        if (parenMatch) {
+                            const nameInParen = parenMatch[1].toLowerCase().trim();
+                            if (nameInParen.includes(contactLower) || contactLower.includes(nameInParen)) {
+                                matchedKey = key;
+                            }
+                        }
+                        // Match par parties du nom
+                        if (!matchedKey) {
+                            const contactParts = contactLower.split(/[\s,]+/).filter(p => p.length > 2);
+                            const clientParts = clientNameLower.split(/[\s,()]+/).filter(p => p.length > 2);
+                            let matchCount = 0;
+                            for (const cp of contactParts) {
+                                if (clientParts.some(clp => clp.includes(cp) || cp.includes(clp))) {
+                                    matchCount++;
+                                }
+                            }
+                            // Si au moins 2 parties matchent ou toutes les parties du contact matchent
+                            if (matchCount >= 2 || (contactParts.length > 0 && matchCount === contactParts.length)) {
+                                matchedKey = key;
+                            }
+                        }
+                    });
+
+                    if (matchedKey) {
+                        clientsMap.get(matchedKey).aircallCalls.push(call);
+                        Utils.log(`Appel "${contactName}" associé au client "${clientsMap.get(matchedKey).name}"`);
+                    } else {
+                        addToClient(contactName, null, null, 'aircallCalls', call);
+                    }
+                });
+
                 // Tâches terminées
                 tasksCompleted.forEach(t => {
                     addToClient(t.client, t.clientId, null, 'tasksCompleted', t);
@@ -2813,10 +3895,44 @@
                     addToClient(clientName, c.clientId, c.clientEmail, 'claims', c);
                 });
 
-                // Logs client
+                // Logs - regrouper par client si l'ID client est présent dans les changements
                 logs.forEach(l => {
-                    if (l.tableRaw && l.tableRaw.toLowerCase().includes('client')) {
-                        addToClient(l.entityName, l.entityId || l.clientId, l.clientEmail, 'logs', l);
+                    // Exclure les tables qui ne sont pas des clients
+                    const tableRawLower = (l.tableRaw || '').toLowerCase();
+                    if (tableRawLower.includes('utilisateur') || tableRawLower.includes('user') ||
+                        tableRawLower.includes('collaborateur') || tableRawLower.includes('employe')) {
+                        return; // Skip - pas un client
+                    }
+
+                    // Chercher un ID client dans les changements ou dans la table
+                    let clientId = l.clientId;
+                    let clientName = l.entityName;
+
+                    // Si c'est une table client, utiliser l'entityId
+                    if (l.tableRaw && tableRawLower.includes('client')) {
+                        clientId = l.entityId;
+                    }
+
+                    // Chercher dans les changements si y'a un champ client_id ou Client (ID)
+                    if (l.changes && Array.isArray(l.changes)) {
+                        for (const change of l.changes) {
+                            const fieldRaw = (change.fieldRaw || '').toLowerCase();
+                            const fieldName = (change.field || '').toLowerCase();
+                            // Chercher client_id, Client (ID), etc.
+                            if (fieldRaw === 'client_id' || fieldRaw.includes('client') && fieldRaw.includes('id') ||
+                                fieldName.includes('client') && fieldName.includes('id')) {
+                                const val = change.newValueRaw || change.newValue || change.oldValueRaw || change.oldValue;
+                                if (val && /^\d+$/.test(String(val).trim())) {
+                                    clientId = String(val).trim();
+                                    Utils.log(`Log "${l.actionRaw}" sur ${l.tableRaw}: Client ID trouvé = ${clientId}`);
+                                    break;
+                                }
+                            }
+                        }
+                    }
+
+                    if (clientId) {
+                        addToClient(clientName, clientId, l.clientEmail, 'logs', l);
                     }
                 });
 
@@ -2830,6 +3946,7 @@
                             // Fusionner les données
                             existing.emailsSent.push(...client.emailsSent);
                             existing.emailsAffected.push(...client.emailsAffected);
+                            existing.aircallCalls.push(...client.aircallCalls);
                             existing.tasksCompleted.push(...client.tasksCompleted);
                             existing.tasksOverdue.push(...client.tasksOverdue);
                             existing.estimates.push(...client.estimates);
@@ -2849,18 +3966,23 @@
 
                 // Trier les clients par nombre d'actions (plus actifs en premier)
                 const sortedClients = Array.from(mergedClients.values()).sort((a, b) => {
-                    const countA = a.emailsSent.length + a.emailsAffected.length + a.tasksCompleted.length +
+                    const countA = a.emailsSent.length + a.emailsAffected.length + a.aircallCalls.length + a.tasksCompleted.length +
                                   a.estimates.length + a.policies.length + a.claims.length + a.logs.length;
-                    const countB = b.emailsSent.length + b.emailsAffected.length + b.tasksCompleted.length +
+                    const countB = b.emailsSent.length + b.emailsAffected.length + b.aircallCalls.length + b.tasksCompleted.length +
                                   b.estimates.length + b.policies.length + b.claims.length + b.logs.length;
                     return countB - countA;
                 });
 
-                // Filtrer les clients sans aucune action
-                const activeClients = sortedClients.filter(c =>
-                    c.emailsSent.length + c.emailsAffected.length + c.tasksCompleted.length +
-                    c.tasksOverdue.length + c.estimates.length + c.policies.length + c.claims.length + c.logs.length > 0
-                );
+                // Filtrer les clients sans aucune action UTILE (exclure ceux qui n'ont que des tâches en retard)
+                const activeClients = sortedClients.filter(c => {
+                    const hasUsefulActions = c.emailsSent.length + c.emailsAffected.length + c.aircallCalls.length +
+                        c.tasksCompleted.length + c.estimates.length + c.policies.length + c.claims.length + c.logs.length > 0;
+                    // Si le client n'a que des tâches en retard et rien d'autre, on l'exclut
+                    if (!hasUsefulActions && c.tasksOverdue.length > 0) {
+                        return false;
+                    }
+                    return hasUsefulActions || c.tasksOverdue.length > 0;
+                });
 
             // Générer le HTML de la vue par client
             const clientViewHTML = `
@@ -2873,166 +3995,211 @@
                     background: rgba(0,0,0,0.9);
                     z-index: 1000000;
                     overflow-y: auto;
-                    font-family: Arial, sans-serif;
+                    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
                 ">
                     <div style="
-                        max-width: 1200px;
+                        max-width: 1100px;
                         margin: 20px auto;
-                        background: white;
-                        border-radius: 10px;
-                        padding: 30px;
+                        background: #f5f5f5;
+                        border-radius: 15px;
+                        padding: 25px;
                         box-shadow: 0 10px 50px rgba(0,0,0,0.3);
                     ">
                         <!-- Header -->
-                        <div style="display: flex; justify-content: space-between; align-items: center; border-bottom: 3px solid #1565c0; padding-bottom: 20px; margin-bottom: 30px;">
+                        <div style="display: flex; justify-content: space-between; align-items: center; background: white; padding: 20px; border-radius: 12px; margin-bottom: 20px; box-shadow: 0 2px 8px rgba(0,0,0,0.05);">
                             <div>
-                                <h1 style="color: #1565c0; margin: 0; font-size: 24px;">👤 Vue par Client</h1>
-                                <p style="color: #666; margin: 5px 0 0 0; font-size: 16px;">
-                                    <strong>${user}</strong> - ${date} • ${activeClients.length} clients concernés
+                                <h1 style="color: #1565c0; margin: 0; font-size: 22px; font-weight: 600;">👤 Vue par Client</h1>
+                                <p style="color: #666; margin: 5px 0 0 0; font-size: 14px;">
+                                    <strong>${user}</strong> • ${date} • ${activeClients.length} clients
                                 </p>
                             </div>
-                            <div>
-                                <button id="ltoa-back-to-categories" style="
-                                    background: #1565c0;
-                                    color: white;
-                                    border: none;
-                                    padding: 12px 20px;
-                                    border-radius: 5px;
-                                    cursor: pointer;
-                                    font-size: 13px;
-                                    margin-right: 8px;
-                                    font-weight: bold;
-                                ">📊 Retour Catégories</button>
-                                <button id="ltoa-close-client-view" style="
-                                    background: #666;
-                                    color: white;
-                                    border: none;
-                                    padding: 12px 20px;
-                                    border-radius: 5px;
-                                    cursor: pointer;
-                                    font-size: 13px;
-                                    font-weight: bold;
-                                ">✕ Fermer</button>
-                            </div>
+                            <button id="ltoa-close-client-view" style="
+                                background: linear-gradient(135deg, #666, #444);
+                                color: white;
+                                border: none;
+                                padding: 12px 24px;
+                                border-radius: 8px;
+                                cursor: pointer;
+                                font-size: 13px;
+                                font-weight: bold;
+                            ">✕ Fermer</button>
                         </div>
 
                         <!-- Liste des clients -->
-                        ${activeClients.length > 0 ? activeClients.map(client => {
-                            const totalActions = client.emailsSent.length + client.emailsAffected.length +
-                                               client.tasksCompleted.length + client.tasksOverdue.length +
-                                               client.estimates.length + client.policies.length +
-                                               client.claims.length + client.logs.length;
-
+                        ${activeClients.length > 0 ? activeClients.map((client, clientIdx) => {
                             const clientLink = client.id ?
                                 `https://courtage.modulr.fr/fr/scripts/clients/clients_card.php?id=${client.id}` : '#';
+                            const cuid = 'c' + clientIdx + '_' + Date.now();
 
                             return `
-                            <div style="background: #f8f9fa; border: 1px solid #dee2e6; border-radius: 10px; margin-bottom: 20px; overflow: hidden;">
-                                <!-- En-tête client -->
-                                <div style="background: linear-gradient(135deg, #1565c0 0%, #0d47a1 100%); color: white; padding: 15px 20px;">
+                            <div style="background: white; border-radius: 12px; margin-bottom: 20px; overflow: hidden; box-shadow: 0 2px 10px rgba(0,0,0,0.08);">
+                                <!-- En-tête client avec gradient -->
+                                <div style="background: linear-gradient(135deg, #1565c0 0%, #0d47a1 100%); color: white; padding: 18px 22px;">
                                     <div style="display: flex; justify-content: space-between; align-items: flex-start;">
                                         <div>
-                                            <div style="display: flex; align-items: center; gap: 10px; margin-bottom: 5px;">
-                                                <a href="${clientLink}" target="_blank" style="color: white; text-decoration: none; font-size: 18px; font-weight: bold;">
-                                                    👤 ${Utils.escapeHtml(client.name)}
-                                                </a>
-                                                ${client.id ? `<span style="background: rgba(255,255,255,0.25); padding: 2px 8px; border-radius: 10px; font-size: 11px; font-weight: bold;">N° ${client.id}</span>` : ''}
-                                            </div>
-                                            ${client.email ? `<div style="opacity: 0.85; font-size: 13px;">📧 ${Utils.escapeHtml(client.email)}</div>` : ''}
+                                            <a href="${clientLink}" target="_blank" style="color: white; text-decoration: none; font-size: 18px; font-weight: 600;">
+                                                👤 ${Utils.escapeHtml(client.name)}
+                                            </a>
+                                            ${client.id ? `<span style="background: rgba(255,255,255,0.2); padding: 3px 10px; border-radius: 12px; font-size: 11px; margin-left: 10px;">N° ${client.id}</span>` : ''}
+                                            ${client.email ? `<div style="opacity: 0.8; font-size: 12px; margin-top: 5px;">📧 ${Utils.escapeHtml(client.email)}</div>` : ''}
                                         </div>
-                                        <div style="display: flex; gap: 8px; flex-wrap: wrap; justify-content: flex-end;">
-                                            ${client.emailsSent.length > 0 ? `<span style="background: rgba(255,255,255,0.2); padding: 4px 10px; border-radius: 12px; font-size: 12px;">📤 ${client.emailsSent.length}</span>` : ''}
-                                            ${client.emailsAffected.length > 0 ? `<span style="background: rgba(255,255,255,0.2); padding: 4px 10px; border-radius: 12px; font-size: 12px;">📥 ${client.emailsAffected.length}</span>` : ''}
-                                            ${client.tasksCompleted.length > 0 ? `<span style="background: rgba(255,255,255,0.2); padding: 4px 10px; border-radius: 12px; font-size: 12px;">✅ ${client.tasksCompleted.length}</span>` : ''}
-                                            ${client.tasksOverdue.length > 0 ? `<span style="background: rgba(255,152,0,0.3); padding: 4px 10px; border-radius: 12px; font-size: 12px;">⚠️ ${client.tasksOverdue.length}</span>` : ''}
-                                            ${client.estimates.length > 0 ? `<span style="background: rgba(255,255,255,0.2); padding: 4px 10px; border-radius: 12px; font-size: 12px;">📋 ${client.estimates.length}</span>` : ''}
-                                            ${client.policies.length > 0 ? `<span style="background: rgba(255,255,255,0.2); padding: 4px 10px; border-radius: 12px; font-size: 12px;">📄 ${client.policies.length}</span>` : ''}
-                                            ${client.claims.length > 0 ? `<span style="background: rgba(255,255,255,0.2); padding: 4px 10px; border-radius: 12px; font-size: 12px;">🚨 ${client.claims.length}</span>` : ''}
+                                        <div style="display: flex; gap: 6px; flex-wrap: wrap;">
+                                            ${client.emailsSent.length > 0 ? `<span style="background: #2196f3; padding: 4px 12px; border-radius: 15px; font-size: 11px; font-weight: 500;">📤 ${client.emailsSent.length}</span>` : ''}
+                                            ${client.emailsAffected.length > 0 ? `<span style="background: #4caf50; padding: 4px 12px; border-radius: 15px; font-size: 11px; font-weight: 500;">📥 ${client.emailsAffected.length}</span>` : ''}
+                                            ${client.aircallCalls.length > 0 ? `<span style="background: #ff9800; padding: 4px 12px; border-radius: 15px; font-size: 11px; font-weight: 500;">📞 ${client.aircallCalls.length}</span>` : ''}
+                                            ${client.tasksCompleted.length > 0 ? `<span style="background: #ff5722; padding: 4px 12px; border-radius: 15px; font-size: 11px; font-weight: 500;">✅ ${client.tasksCompleted.length}</span>` : ''}
                                         </div>
                                     </div>
                                 </div>
 
-                                <!-- Détails client -->
-                                <div style="padding: 15px 20px;">
+                                <!-- Contenu avec cartes colorées -->
+                                <div style="padding: 18px; display: grid; gap: 12px;">
+
                                     ${client.emailsSent.length > 0 ? `
-                                        <div style="margin-bottom: 12px;">
-                                            <strong style="color: #1976d2;">📤 Emails envoyés (${client.emailsSent.length})</strong>
-                                            <ul style="margin: 5px 0 0 20px; padding: 0; font-size: 13px; color: #555;">
-                                                ${client.emailsSent.map(e => `<li>${Utils.escapeHtml(e.subject || 'Sans objet')} <span style="color: #999;">(${e.time || e.date || ''})</span></li>`).join('')}
-                                            </ul>
-                                        </div>
+                                    <!-- Emails envoyés -->
+                                    <div style="background: linear-gradient(135deg, #e3f2fd 0%, #bbdefb 100%); border-radius: 10px; padding: 15px; border-left: 4px solid #1976d2;">
+                                        <div style="font-weight: 600; color: #1565c0; margin-bottom: 10px; font-size: 14px;">📤 Emails envoyés (${client.emailsSent.length})</div>
+                                        ${client.emailsSent.map((e, eIdx) => `
+                                            <div style="background: white; border-radius: 6px; padding: 10px; margin-bottom: 6px;">
+                                                <div style="display: flex; justify-content: space-between;">
+                                                    <strong style="color: #333; font-size: 13px;">${Utils.escapeHtml(e.subject || 'Sans objet')}</strong>
+                                                    <span style="color: #1976d2; font-size: 11px; font-weight: 500;">${e.time || ''}</span>
+                                                </div>
+                                                ${e.body ? `
+                                                    <div id="email_short_${cuid}_${eIdx}" style="color: #666; font-size: 12px; margin-top: 6px; line-height: 1.4;">${Utils.escapeHtml(Utils.truncate(e.body, 150))}</div>
+                                                    ${e.body.length > 150 ? `
+                                                        <div id="email_full_${cuid}_${eIdx}" style="display: none; color: #666; font-size: 12px; margin-top: 6px; line-height: 1.4; white-space: pre-wrap;">${Utils.escapeHtml(e.body)}</div>
+                                                        <button onclick="var s=document.getElementById('email_short_${cuid}_${eIdx}');var f=document.getElementById('email_full_${cuid}_${eIdx}');if(f.style.display==='none'){f.style.display='block';s.style.display='none';this.textContent='▲ Réduire';}else{f.style.display='none';s.style.display='block';this.textContent='▼ Voir plus';}" style="background: #1976d2; color: white; border: none; padding: 4px 10px; border-radius: 4px; font-size: 11px; cursor: pointer; margin-top: 6px;">▼ Voir plus</button>
+                                                    ` : ''}
+                                                ` : ''}
+                                            </div>
+                                        `).join('')}
+                                    </div>
                                     ` : ''}
 
                                     ${client.emailsAffected.length > 0 ? `
-                                        <div style="margin-bottom: 12px;">
-                                            <strong style="color: #388e3c;">📥 Emails reçus/affectés (${client.emailsAffected.length})</strong>
-                                            <ul style="margin: 5px 0 0 20px; padding: 0; font-size: 13px; color: #555;">
-                                                ${client.emailsAffected.map(e => `<li>${Utils.escapeHtml(e.subject || 'Sans objet')} <span style="color: #999;">(${e.date || ''})</span></li>`).join('')}
-                                            </ul>
-                                        </div>
+                                    <!-- Emails reçus -->
+                                    <div style="background: linear-gradient(135deg, #e8f5e9 0%, #c8e6c9 100%); border-radius: 10px; padding: 15px; border-left: 4px solid #388e3c;">
+                                        <div style="font-weight: 600; color: #2e7d32; margin-bottom: 10px; font-size: 14px;">📥 Emails reçus/affectés (${client.emailsAffected.length})</div>
+                                        ${client.emailsAffected.map(e => `
+                                            <div style="background: white; border-radius: 6px; padding: 10px; margin-bottom: 6px;">
+                                                <strong style="color: #333; font-size: 13px;">${Utils.escapeHtml(e.subject || 'Sans objet')}</strong>
+                                                <div style="color: #666; font-size: 11px; margin-top: 4px;">De: ${Utils.escapeHtml(e.from || '')} → ${Utils.escapeHtml(e.affectedTo || '')}</div>
+                                            </div>
+                                        `).join('')}
+                                    </div>
+                                    ` : ''}
+
+                                    ${client.aircallCalls.length > 0 ? `
+                                    <!-- Appels avec résumés IA complets -->
+                                    <div style="background: linear-gradient(135deg, #fff3e0 0%, #ffe0b2 100%); border-radius: 10px; padding: 15px; border-left: 4px solid #f57c00;">
+                                        <div style="font-weight: 600; color: #e65100; margin-bottom: 10px; font-size: 14px;">📞 Appels téléphoniques (${client.aircallCalls.length})</div>
+                                        ${client.aircallCalls.map(call => {
+                                            const bgColor = call.type === 'sortant' ? '#fff8e1' : '#e8f5e9';
+                                            const borderColor = call.type === 'sortant' ? '#ffb300' : '#66bb6a';
+                                            const moodIcon = call.mood === 'Positif' ? '😊' : (call.mood === 'Négatif' ? '😟' : (call.mood === 'Neutre' ? '😐' : ''));
+                                            return `
+                                            <div style="background: ${bgColor}; border-radius: 8px; padding: 12px; margin-bottom: 8px; border-left: 3px solid ${borderColor};">
+                                                <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px;">
+                                                    <span style="font-weight: 600; color: #333;">
+                                                        ${call.type === 'sortant' ? '📤 Sortant' : '📥 Entrant'}
+                                                        <span style="font-weight: normal; color: #666;">• ${call.duration || ''}</span>
+                                                        ${moodIcon ? `<span style="margin-left: 8px;">${moodIcon}</span>` : ''}
+                                                    </span>
+                                                    <span style="color: #888; font-size: 11px;">${call.time || ''}</span>
+                                                </div>
+                                                ${call.summary ? `
+                                                <div style="background: white; border-radius: 6px; padding: 10px; font-size: 12px; color: #555; line-height: 1.5;">
+                                                    <div style="color: #ff8f00; font-size: 10px; font-weight: 600; margin-bottom: 4px;">💬 RÉSUMÉ IA</div>
+                                                    ${Utils.escapeHtml(call.summary)}
+                                                </div>
+                                                ` : ''}
+                                            </div>
+                                            `;
+                                        }).join('')}
+                                    </div>
                                     ` : ''}
 
                                     ${client.tasksCompleted.length > 0 ? `
-                                        <div style="margin-bottom: 12px;">
-                                            <strong style="color: #f57c00;">✅ Tâches terminées (${client.tasksCompleted.length})</strong>
-                                            <ul style="margin: 5px 0 0 20px; padding: 0; font-size: 13px; color: #555;">
-                                                ${client.tasksCompleted.map(t => `<li>${Utils.escapeHtml(t.title)}</li>`).join('')}
-                                            </ul>
-                                        </div>
+                                    <!-- Tâches terminées avec heure -->
+                                    <div style="background: linear-gradient(135deg, #fff8e1 0%, #ffecb3 100%); border-radius: 10px; padding: 15px; border-left: 4px solid #ff8f00;">
+                                        <div style="font-weight: 600; color: #e65100; margin-bottom: 10px; font-size: 14px;">✅ Tâches terminées (${client.tasksCompleted.length})</div>
+                                        ${client.tasksCompleted.map((t, tIdx) => `
+                                            <div style="background: white; border-radius: 6px; padding: 10px; margin-bottom: 6px;">
+                                                <div style="display: flex; justify-content: space-between; align-items: flex-start;">
+                                                    <strong style="color: #333; font-size: 13px;">${Utils.escapeHtml(t.title)}</strong>
+                                                    ${t.closedTime ? `<span style="background: #ff8f00; color: white; padding: 2px 8px; border-radius: 10px; font-size: 10px;">⏰ ${t.closedTime}</span>` : ''}
+                                                </div>
+                                                ${t.content ? `
+                                                    <div id="task_short_${cuid}_${tIdx}" style="color: #666; font-size: 12px; margin-top: 6px; line-height: 1.4;">${Utils.escapeHtml(Utils.truncate(t.content, 120))}</div>
+                                                    ${t.content.length > 120 ? `
+                                                        <div id="task_full_${cuid}_${tIdx}" style="display: none; color: #666; font-size: 12px; margin-top: 6px; line-height: 1.4; white-space: pre-wrap;">${Utils.escapeHtml(t.content)}</div>
+                                                        <button onclick="var s=document.getElementById('task_short_${cuid}_${tIdx}');var f=document.getElementById('task_full_${cuid}_${tIdx}');if(f.style.display==='none'){f.style.display='block';s.style.display='none';this.textContent='▲ Réduire';}else{f.style.display='none';s.style.display='block';this.textContent='▼ Voir plus';}" style="background: #ff8f00; color: white; border: none; padding: 4px 10px; border-radius: 4px; font-size: 11px; cursor: pointer; margin-top: 6px;">▼ Voir plus</button>
+                                                    ` : ''}
+                                                ` : ''}
+                                            </div>
+                                        `).join('')}
+                                    </div>
                                     ` : ''}
 
                                     ${client.tasksOverdue.length > 0 ? `
-                                        <div style="margin-bottom: 12px;">
-                                            <strong style="color: #d32f2f;">⚠️ Tâches en retard (${client.tasksOverdue.length})</strong>
-                                            <ul style="margin: 5px 0 0 20px; padding: 0; font-size: 13px; color: #555;">
-                                                ${client.tasksOverdue.map(t => `<li>${Utils.escapeHtml(t.title)} <span style="color: #d32f2f;">(${t.daysOverdue}j de retard)</span></li>`).join('')}
-                                            </ul>
-                                        </div>
+                                    <!-- Tâches en retard -->
+                                    <div style="background: linear-gradient(135deg, #ffebee 0%, #ffcdd2 100%); border-radius: 10px; padding: 15px; border-left: 4px solid #d32f2f;">
+                                        <div style="font-weight: 600; color: #c62828; margin-bottom: 10px; font-size: 14px;">⚠️ Tâches en retard (${client.tasksOverdue.length})</div>
+                                        ${client.tasksOverdue.map(t => `
+                                            <div style="background: white; border-radius: 6px; padding: 10px; margin-bottom: 6px;">
+                                                <strong style="color: #333; font-size: 13px;">${Utils.escapeHtml(t.title)}</strong>
+                                                <div style="color: #d32f2f; font-size: 11px; margin-top: 4px;">${t.daysOverdue}j de retard • → ${Utils.escapeHtml(t.assignedTo || 'N/A')}</div>
+                                            </div>
+                                        `).join('')}
+                                    </div>
                                     ` : ''}
 
-                                    ${client.estimates.length > 0 ? `
-                                        <div style="margin-bottom: 12px;">
-                                            <strong style="color: #7b1fa2;">📋 Devis (${client.estimates.length})</strong>
-                                            <ul style="margin: 5px 0 0 20px; padding: 0; font-size: 13px; color: #555;">
-                                                ${client.estimates.map(e => `<li>${Utils.escapeHtml(e.entityName || 'Devis')} - ${e.action || 'Action'}</li>`).join('')}
-                                            </ul>
+                                    ${(client.estimates.length > 0 || client.policies.length > 0 || client.claims.length > 0) ? `
+                                    <!-- Documents -->
+                                    <div style="background: linear-gradient(135deg, #f3e5f5 0%, #e1bee7 100%); border-radius: 10px; padding: 15px; border-left: 4px solid #7b1fa2;">
+                                        <div style="font-weight: 600; color: #6a1b9a; margin-bottom: 10px; font-size: 14px;">📄 Documents (${client.estimates.length + client.policies.length + client.claims.length})</div>
+                                        <div style="display: flex; flex-wrap: wrap; gap: 8px;">
+                                            ${client.estimates.map(e => `<span style="background: white; color: #7b1fa2; padding: 6px 12px; border-radius: 6px; font-size: 12px;">📋 Devis ${e.entityId || ''}</span>`).join('')}
+                                            ${client.policies.map(p => `<span style="background: white; color: #00796b; padding: 6px 12px; border-radius: 6px; font-size: 12px;">📄 Contrat ${p.entityId || ''}</span>`).join('')}
+                                            ${client.claims.map(c => `<span style="background: white; color: #c62828; padding: 6px 12px; border-radius: 6px; font-size: 12px;">🚨 Sinistre ${c.entityId || ''}</span>`).join('')}
                                         </div>
-                                    ` : ''}
-
-                                    ${client.policies.length > 0 ? `
-                                        <div style="margin-bottom: 12px;">
-                                            <strong style="color: #00796b;">📄 Contrats (${client.policies.length})</strong>
-                                            <ul style="margin: 5px 0 0 20px; padding: 0; font-size: 13px; color: #555;">
-                                                ${client.policies.map(p => `<li>${Utils.escapeHtml(p.entityName || 'Contrat')} - ${p.action || 'Action'}</li>`).join('')}
-                                            </ul>
-                                        </div>
-                                    ` : ''}
-
-                                    ${client.claims.length > 0 ? `
-                                        <div style="margin-bottom: 12px;">
-                                            <strong style="color: #c62828;">🚨 Sinistres (${client.claims.length})</strong>
-                                            <ul style="margin: 5px 0 0 20px; padding: 0; font-size: 13px; color: #555;">
-                                                ${client.claims.map(c => `<li>${Utils.escapeHtml(c.entityName || 'Sinistre')} - ${c.action || 'Action'}</li>`).join('')}
-                                            </ul>
-                                        </div>
+                                    </div>
                                     ` : ''}
 
                                     ${client.logs.length > 0 ? `
-                                        <div style="margin-bottom: 12px;">
-                                            <strong style="color: #5d4037;">📝 Modifications fiche (${client.logs.length})</strong>
-                                            <ul style="margin: 5px 0 0 20px; padding: 0; font-size: 13px; color: #555;">
-                                                ${client.logs.map(l => `<li>${l.action || 'Modification'}</li>`).join('')}
-                                            </ul>
+                                    <!-- Modifications regroupées -->
+                                    <div style="background: linear-gradient(135deg, #efebe9 0%, #d7ccc8 100%); border-radius: 10px; padding: 15px; border-left: 4px solid #5d4037;">
+                                        <div style="font-weight: 600; color: #4e342e; margin-bottom: 8px; font-size: 14px;">📝 Modifications fiche (${client.logs.length})</div>
+                                        <div style="display: flex; flex-wrap: wrap; gap: 8px;">
+                                            ${(() => {
+                                                const grouped = {};
+                                                client.logs.forEach(l => {
+                                                    const action = l.action || 'Modification';
+                                                    const key = action.replace(/[✨✏️➕🗑️📝]/g, '').trim();
+                                                    if (!grouped[key]) grouped[key] = 0;
+                                                    grouped[key]++;
+                                                });
+                                                return Object.entries(grouped).map(([action, count]) => {
+                                                    let icon = '📝';
+                                                    let bg = '#f5f5f5';
+                                                    if (action.toLowerCase().includes('création') || action.toLowerCase().includes('insert')) { icon = '✨'; bg = '#e8f5e9'; }
+                                                    else if (action.toLowerCase().includes('modification') || action.toLowerCase().includes('update')) { icon = '✏️'; bg = '#fff3e0'; }
+                                                    else if (action.toLowerCase().includes('suppression') || action.toLowerCase().includes('delete')) { icon = '🗑️'; bg = '#ffebee'; }
+                                                    return `<span style="background: ${bg}; padding: 6px 12px; border-radius: 15px; font-size: 12px; font-weight: 500;">${icon} ${count} ${action.toLowerCase()}</span>`;
+                                                }).join('');
+                                            })()}
                                         </div>
+                                    </div>
                                     ` : ''}
                                 </div>
                             </div>
                             `;
-                        }).join('') : '<p style="text-align: center; color: #666; padding: 40px;">Aucun client concerné aujourd\'hui</p>'}
+                        }).join('') : '<div style="background: white; border-radius: 12px; padding: 50px; text-align: center; color: #666;">Aucun client concerné aujourd\'hui</div>'}
 
                         <!-- Footer -->
-                        <div style="text-align: center; color: #999; padding-top: 20px; border-top: 1px solid #eee; font-size: 12px;">
-                            <p>📊 Vue par Client - LTOA Modulr Script v4</p>
+                        <div style="text-align: center; color: #999; padding-top: 15px; font-size: 12px;">
+                            📊 Vue par Client - LTOA Modulr Script v4.7
                         </div>
                     </div>
                 </div>
@@ -3046,17 +4213,438 @@
                 document.getElementById('ltoa-client-view-modal').remove();
             });
 
-            document.getElementById('ltoa-back-to-categories').addEventListener('click', () => {
-                document.getElementById('ltoa-client-view-modal').remove();
-            });
             } catch (error) {
                 console.error('[LTOA-Report] Erreur Vue par Client:', error);
                 alert('❌ Erreur lors de la génération de la vue par client. Consultez la console F12.');
             }
         },
 
+        // ============================================
+        // VUE CHRONOLOGIQUE
+        // ============================================
+        showChronoView() {
+            try {
+                const { emailsSent, emailsAffected, aircallCalls, tasksCompleted, logs, estimates, policies, claims, user, date } = this.data;
+
+                // Collecter toutes les actions avec leur heure
+                const allActions = [];
+
+                // Parser l'heure d'une chaîne (format HH:MM ou HH:MM:SS)
+                const parseTime = (timeStr) => {
+                    if (!timeStr) return null;
+                    // Chercher un pattern HH:MM ou HH:MM:SS
+                    const match = timeStr.match(/(\d{1,2}):(\d{2})(?::(\d{2}))?/);
+                    if (match) {
+                        const hours = parseInt(match[1]);
+                        const minutes = parseInt(match[2]);
+                        const seconds = match[3] ? parseInt(match[3]) : 0;
+                        return hours * 3600 + minutes * 60 + seconds;
+                    }
+                    return null;
+                };
+
+                // Extraire l'heure d'une date complète DD/MM/YYYY HH:MM
+                const extractTime = (dateStr) => {
+                    if (!dateStr) return null;
+                    const match = dateStr.match(/(\d{1,2}):(\d{2})/);
+                    if (match) {
+                        return `${match[1].padStart(2, '0')}:${match[2]}`;
+                    }
+                    return null;
+                };
+
+                // Emails envoyés
+                emailsSent.forEach(e => {
+                    const time = extractTime(e.date);
+                    if (time) {
+                        allActions.push({
+                            type: 'email_sent',
+                            icon: '📤',
+                            color: '#1976d2',
+                            label: 'Email envoyé',
+                            time: time,
+                            timeSeconds: parseTime(time),
+                            title: e.subject || 'Sans objet',
+                            detail: `À: ${e.to || 'N/A'}`,
+                            client: e.client || ''
+                        });
+                    }
+                });
+
+                // Emails affectés
+                emailsAffected.forEach(e => {
+                    const time = extractTime(e.date);
+                    if (time) {
+                        allActions.push({
+                            type: 'email_affected',
+                            icon: '📥',
+                            color: '#388e3c',
+                            label: 'Email affecté',
+                            time: time,
+                            timeSeconds: parseTime(time),
+                            title: e.subject || 'Sans objet',
+                            detail: `De: ${e.from || 'N/A'}`,
+                            client: e.client || ''
+                        });
+                    }
+                });
+
+                // Appels Aircall
+                (aircallCalls || []).forEach(c => {
+                    const time = c.time;
+                    if (time) {
+                        allActions.push({
+                            type: 'call',
+                            icon: c.type === 'sortant' ? '📞↗' : '📞↙',
+                            color: '#ff8f00',
+                            label: c.type === 'sortant' ? 'Appel sortant' : 'Appel entrant',
+                            time: time,
+                            timeSeconds: parseTime(time),
+                            title: c.contact || 'Inconnu',
+                            detail: `Durée: ${c.duration || '0s'}${c.mood ? ' | ' + c.mood : ''}`,
+                            client: c.contact || '',
+                            summary: c.summary
+                        });
+                    }
+                });
+
+                // Tâches terminées (utiliser l'heure de clôture)
+                tasksCompleted.forEach(t => {
+                    const time = t.closedTime || extractTime(t.completedDate);
+                    if (time) {
+                        allActions.push({
+                            type: 'task',
+                            icon: '✅',
+                            color: '#f57c00',
+                            label: 'Tâche terminée',
+                            time: time,
+                            timeSeconds: parseTime(time),
+                            title: t.title || 'Sans titre',
+                            detail: `Client: ${t.client || 'N/A'}`,
+                            client: t.client || '',
+                            summary: t.content
+                        });
+                    }
+                });
+
+                // Logs/Actions diverses
+                logs.forEach(l => {
+                    const time = extractTime(l.date);
+                    if (time) {
+                        allActions.push({
+                            type: 'log',
+                            icon: '📝',
+                            color: '#7b1fa2',
+                            label: l.type || 'Action',
+                            time: time,
+                            timeSeconds: parseTime(time),
+                            title: l.action || l.description || 'Action',
+                            detail: `Client: ${l.client || 'N/A'}`,
+                            client: l.client || ''
+                        });
+                    }
+                });
+
+                // Devis
+                estimates.forEach(e => {
+                    const time = extractTime(e.date);
+                    if (time) {
+                        allActions.push({
+                            type: 'estimate',
+                            icon: '📋',
+                            color: '#0097a7',
+                            label: 'Devis',
+                            time: time,
+                            timeSeconds: parseTime(time),
+                            title: e.reference || 'Devis',
+                            detail: `Client: ${e.client || 'N/A'}`,
+                            client: e.client || ''
+                        });
+                    }
+                });
+
+                // Contrats
+                policies.forEach(p => {
+                    const time = extractTime(p.date);
+                    if (time) {
+                        allActions.push({
+                            type: 'policy',
+                            icon: '📄',
+                            color: '#3f51b5',
+                            label: 'Contrat',
+                            time: time,
+                            timeSeconds: parseTime(time),
+                            title: p.reference || 'Contrat',
+                            detail: `Client: ${p.client || 'N/A'}`,
+                            client: p.client || ''
+                        });
+                    }
+                });
+
+                // Sinistres
+                claims.forEach(c => {
+                    const time = extractTime(c.date);
+                    if (time) {
+                        allActions.push({
+                            type: 'claim',
+                            icon: '🚨',
+                            color: '#c2185b',
+                            label: 'Sinistre',
+                            time: time,
+                            timeSeconds: parseTime(time),
+                            title: c.reference || 'Sinistre',
+                            detail: `Client: ${c.client || 'N/A'}`,
+                            client: c.client || ''
+                        });
+                    }
+                });
+
+                // Trier par heure (croissant)
+                allActions.sort((a, b) => {
+                    if (a.timeSeconds === null) return 1;
+                    if (b.timeSeconds === null) return -1;
+                    return a.timeSeconds - b.timeSeconds;
+                });
+
+                // Calculer le temps écoulé entre chaque action
+                const formatDuration = (seconds) => {
+                    if (seconds < 60) return `${seconds}s`;
+                    if (seconds < 3600) {
+                        const mins = Math.floor(seconds / 60);
+                        const secs = seconds % 60;
+                        return secs > 0 ? `${mins}min ${secs}s` : `${mins}min`;
+                    }
+                    const hours = Math.floor(seconds / 3600);
+                    const mins = Math.floor((seconds % 3600) / 60);
+                    return mins > 0 ? `${hours}h ${mins}min` : `${hours}h`;
+                };
+
+                // Générer le HTML de la timeline
+                let timelineHTML = '';
+                for (let i = 0; i < allActions.length; i++) {
+                    const action = allActions[i];
+                    const prevAction = i > 0 ? allActions[i - 1] : null;
+
+                    // Calculer le temps écoulé depuis l'action précédente
+                    let elapsedHTML = '';
+                    if (prevAction && action.timeSeconds !== null && prevAction.timeSeconds !== null) {
+                        const elapsed = action.timeSeconds - prevAction.timeSeconds;
+                        if (elapsed > 0) {
+                            const elapsedFormatted = formatDuration(elapsed);
+                            elapsedHTML = `
+                                <div style="
+                                    display: flex;
+                                    align-items: center;
+                                    padding: 8px 0;
+                                    margin-left: 18px;
+                                ">
+                                    <div style="
+                                        width: 2px;
+                                        height: 30px;
+                                        background: linear-gradient(to bottom, ${prevAction.color}, ${action.color});
+                                        margin-right: 15px;
+                                    "></div>
+                                    <div style="
+                                        background: #f5f5f5;
+                                        padding: 4px 12px;
+                                        border-radius: 12px;
+                                        font-size: 11px;
+                                        color: #666;
+                                    ">
+                                        ⏱️ ${elapsedFormatted}
+                                    </div>
+                                </div>
+                            `;
+                        }
+                    }
+
+                    timelineHTML += `
+                        ${elapsedHTML}
+                        <div style="
+                            display: flex;
+                            align-items: flex-start;
+                            padding: 10px 0;
+                        ">
+                            <div style="
+                                width: 38px;
+                                height: 38px;
+                                border-radius: 50%;
+                                background: ${action.color};
+                                display: flex;
+                                align-items: center;
+                                justify-content: center;
+                                font-size: 16px;
+                                flex-shrink: 0;
+                                box-shadow: 0 2px 8px ${action.color}40;
+                            ">${action.icon}</div>
+                            <div style="
+                                flex: 1;
+                                margin-left: 15px;
+                                background: white;
+                                border: 1px solid #e0e0e0;
+                                border-radius: 8px;
+                                padding: 12px 15px;
+                                box-shadow: 0 1px 3px rgba(0,0,0,0.05);
+                            ">
+                                <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 5px;">
+                                    <span style="
+                                        background: ${action.color}20;
+                                        color: ${action.color};
+                                        padding: 2px 8px;
+                                        border-radius: 4px;
+                                        font-size: 11px;
+                                        font-weight: bold;
+                                    ">${action.label}</span>
+                                    <span style="
+                                        font-size: 13px;
+                                        color: #333;
+                                        font-weight: bold;
+                                    ">🕐 ${action.time}</span>
+                                </div>
+                                <div style="font-size: 14px; font-weight: 600; color: #333; margin-bottom: 3px;">
+                                    ${Utils.escapeHtml(action.title)}
+                                </div>
+                                <div style="font-size: 12px; color: #666;">
+                                    ${Utils.escapeHtml(action.detail)}
+                                </div>
+                                ${action.summary ? `
+                                    <div style="
+                                        margin-top: 8px;
+                                        padding: 8px;
+                                        background: #f9f9f9;
+                                        border-radius: 4px;
+                                        font-size: 11px;
+                                        color: #555;
+                                        border-left: 3px solid ${action.color};
+                                    ">
+                                        ✨ ${Utils.escapeHtml(Utils.truncate(action.summary, 150))}
+                                    </div>
+                                ` : ''}
+                            </div>
+                        </div>
+                    `;
+                }
+
+                // Calculer le temps total de travail
+                let totalWorkTime = '';
+                if (allActions.length >= 2) {
+                    const first = allActions[0];
+                    const last = allActions[allActions.length - 1];
+                    if (first.timeSeconds !== null && last.timeSeconds !== null) {
+                        const total = last.timeSeconds - first.timeSeconds;
+                        totalWorkTime = `<div style="
+                            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+                            color: white;
+                            padding: 15px 20px;
+                            border-radius: 10px;
+                            margin-bottom: 20px;
+                            display: flex;
+                            justify-content: space-between;
+                            align-items: center;
+                        ">
+                            <div>
+                                <div style="font-size: 12px; opacity: 0.9;">Plage horaire de travail</div>
+                                <div style="font-size: 18px; font-weight: bold;">${first.time} → ${last.time}</div>
+                            </div>
+                            <div style="text-align: right;">
+                                <div style="font-size: 12px; opacity: 0.9;">Durée totale</div>
+                                <div style="font-size: 18px; font-weight: bold;">${formatDuration(total)}</div>
+                            </div>
+                        </div>`;
+                    }
+                }
+
+                // Créer le modal
+                const modalHTML = `
+                    <div id="ltoa-chrono-modal" style="
+                        position: fixed;
+                        top: 0;
+                        left: 0;
+                        width: 100%;
+                        height: 100%;
+                        background: rgba(0,0,0,0.85);
+                        z-index: 9999999;
+                        overflow-y: auto;
+                        font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+                    ">
+                        <div style="
+                            max-width: 800px;
+                            margin: 20px auto;
+                            background: #fafafa;
+                            border-radius: 12px;
+                            padding: 25px;
+                            box-shadow: 0 10px 50px rgba(0,0,0,0.3);
+                        ">
+                            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px;">
+                                <div>
+                                    <h2 style="margin: 0; color: #333; font-size: 20px;">🕐 Vue Chronologique</h2>
+                                    <p style="margin: 5px 0 0 0; color: #666; font-size: 13px;">
+                                        ${Utils.escapeHtml(user)} - ${date} - ${allActions.length} actions
+                                    </p>
+                                </div>
+                                <button id="ltoa-close-chrono" style="
+                                    background: #666;
+                                    color: white;
+                                    border: none;
+                                    padding: 10px 20px;
+                                    border-radius: 5px;
+                                    cursor: pointer;
+                                    font-size: 13px;
+                                ">✕ Fermer</button>
+                            </div>
+
+                            ${totalWorkTime}
+
+                            <div style="padding: 10px 0;">
+                                ${allActions.length > 0 ? timelineHTML : `
+                                    <p style="text-align: center; color: #666; padding: 40px;">
+                                        Aucune action avec heure trouvée pour cette journée.
+                                    </p>
+                                `}
+                            </div>
+                        </div>
+                    </div>
+                `;
+
+                document.body.insertAdjacentHTML('beforeend', modalHTML);
+
+                document.getElementById('ltoa-close-chrono').addEventListener('click', () => {
+                    document.getElementById('ltoa-chrono-modal').remove();
+                });
+
+                // Fermer avec Escape
+                const escHandler = (e) => {
+                    if (e.key === 'Escape') {
+                        const modal = document.getElementById('ltoa-chrono-modal');
+                        if (modal) {
+                            modal.remove();
+                            document.removeEventListener('keydown', escHandler);
+                        }
+                    }
+                };
+                document.addEventListener('keydown', escHandler);
+
+            } catch (error) {
+                console.error('[LTOA-Report] Erreur Vue Chronologique:', error);
+                alert('❌ Erreur lors de la génération de la vue chronologique. Consultez la console F12.');
+            }
+        },
+
         exportHTML() {
-            const { emailsSent, emailsAffected, tasksCompleted, tasksOverdue, logs, estimates, policies, claims, user, date } = this.data;
+            const { emailsSent, emailsAffected, aircallCalls, pendingEmailsCount, tasksCompleted, tasksOverdue, logs, estimates, policies, claims, user, date, notes, aircallStatus } = this.data;
+
+            // Compteurs Aircall
+            const aircallInbound = (aircallCalls || []).filter(c => c.type === 'entrant').length;
+            const aircallOutbound = (aircallCalls || []).filter(c => c.type === 'sortant').length;
+            const aircallAnswered = (aircallCalls || []).filter(c => c.answered !== false && !c.missedReason).length;
+            const aircallTalkSeconds = (aircallCalls || []).reduce((sum, c) => sum + (Number(c.durationSeconds) || 0), 0);
+            const aircallDurationText = `${Math.floor(aircallTalkSeconds / 3600)}h ${Math.floor((aircallTalkSeconds % 3600) / 60)}min`;
+            const uniqueClients = new Set([
+                ...emailsSent, ...emailsAffected, ...tasksCompleted,
+                ...estimates, ...policies, ...claims, ...logs
+            ].map(item => item.clientId || item.clientName || item.entityId)
+              .filter(value => value && value !== 'N/A' && value !== 'Non associé')).size;
+            const remainingWork = (pendingEmailsCount || 0) + tasksOverdue.length;
 
             // Générer un HTML statique complet (pas besoin de JS)
             const htmlContent = `<!DOCTYPE html>
@@ -3190,12 +4778,78 @@
     </style>
 </head>
 <body>
-    <div class="report-container">
+    <!-- Boutons de navigation -->
+    <div style="max-width: 1000px; margin: 0 auto 20px auto; display: flex; gap: 10px; justify-content: center; flex-wrap: wrap;">
+        <button onclick="showView('categories')" id="btn-categories" class="nav-btn active" style="
+            padding: 12px 25px;
+            background: linear-gradient(135deg, #c62828, #b71c1c);
+            color: white;
+            border: none;
+            border-radius: 8px;
+            font-size: 14px;
+            font-weight: bold;
+            cursor: pointer;
+            box-shadow: 0 3px 10px rgba(0,0,0,0.2);
+        ">📊 Vue Catégories</button>
+        <button onclick="showView('chrono')" id="btn-chrono" class="nav-btn" style="
+            padding: 12px 25px;
+            background: linear-gradient(135deg, #9c27b0, #7b1fa2);
+            color: white;
+            border: none;
+            border-radius: 8px;
+            font-size: 14px;
+            font-weight: bold;
+            cursor: pointer;
+            box-shadow: 0 3px 10px rgba(0,0,0,0.2);
+        ">🕐 Vue Chronologique</button>
+        <button onclick="showView('client')" id="btn-client" class="nav-btn" style="
+            padding: 12px 25px;
+            background: linear-gradient(135deg, #1565c0, #0d47a1);
+            color: white;
+            border: none;
+            border-radius: 8px;
+            font-size: 14px;
+            font-weight: bold;
+            cursor: pointer;
+            box-shadow: 0 3px 10px rgba(0,0,0,0.2);
+        ">👤 Vue par Client</button>
+        <button onclick="window.print()" style="
+            padding: 12px 25px;
+            background: linear-gradient(135deg, #666, #444);
+            color: white;
+            border: none;
+            border-radius: 8px;
+            font-size: 14px;
+            font-weight: bold;
+            cursor: pointer;
+            box-shadow: 0 3px 10px rgba(0,0,0,0.2);
+        ">🖨️ Imprimer</button>
+    </div>
+
+    <div id="view-categories" class="report-container">
         <!-- Header -->
         <div class="header">
             <h1>📊 Rapport d'Activité Quotidien</h1>
             <p><strong>${Utils.escapeHtml(user)}</strong> - ${date}</p>
         </div>
+
+        <div style="margin:0 25px 20px;padding:12px 16px;border-radius:8px;background:${aircallStatus?.state === 'complete' ? '#e8f5e9' : '#fff3e0'};color:${aircallStatus?.state === 'complete' ? '#1b5e20' : '#e65100'};font-size:12px;">
+            📞 ${Utils.escapeHtml(aircallStatus?.message || 'Collecte Aircall non vérifiée')}
+            ${(aircallCalls || []).length ? ` — ${aircallAnswered} répondu(s), ${aircallDurationText} de durée cumulée` : ''}
+        </div>
+
+        <!-- Alerte emails en attente -->
+        ${(pendingEmailsCount || 0) > 0 ? `
+        <div style="background: linear-gradient(135deg, #ffcccb 0%, #ff6b6b 100%); padding: 15px 20px; border-radius: 10px; margin-bottom: 20px; display: flex; align-items: center; justify-content: space-between;">
+            <div style="display: flex; align-items: center; gap: 15px;">
+                <div style="font-size: 32px;">📬</div>
+                <div>
+                    <div style="font-size: 14px; color: #7f0000; font-weight: bold;">Emails assignés à ${Utils.escapeHtml(user)}</div>
+                </div>
+            </div>
+            <div style="font-size: 36px; font-weight: bold; color: #b71c1c;">${pendingEmailsCount || 0}</div>
+        </div>
+        ` : ''}
 
         <!-- Summary -->
         <div class="summary">
@@ -3206,6 +4860,10 @@
             <div class="summary-card bg-green">
                 <div class="number">${emailsAffected.length}</div>
                 <div class="label">📥 Emails Affectés</div>
+            </div>
+            <div class="summary-card" style="background: linear-gradient(135deg, #ff8f00, #e65100);">
+                <div class="number">${(aircallCalls || []).length}</div>
+                <div class="label">📞 Appels (${aircallInbound}↓ ${aircallOutbound}↑)</div>
             </div>
             <div class="summary-card bg-orange">
                 <div class="number">${tasksCompleted.length}</div>
@@ -3231,6 +4889,13 @@
                 <div class="number">${logs.length}</div>
                 <div class="label">📝 Autres Actions</div>
             </div>
+        </div>
+
+        <div class="section" style="display:grid;grid-template-columns:repeat(4,1fr);gap:10px;">
+            <div style="padding:14px;background:#e3f2fd;border-radius:8px;text-align:center;"><strong style="font-size:22px;color:#1565c0;">${uniqueClients}</strong><br><small>Dossiers/clients traités</small></div>
+            <div style="padding:14px;background:#e8f5e9;border-radius:8px;text-align:center;"><strong style="font-size:22px;color:#2e7d32;">${estimates.length + policies.length}</strong><br><small>Actions de production</small></div>
+            <div style="padding:14px;background:#fff3e0;border-radius:8px;text-align:center;"><strong style="font-size:22px;color:#ef6c00;">${tasksCompleted.length}</strong><br><small>Suivis finalisés</small></div>
+            <div style="padding:14px;background:${remainingWork ? '#ffebee' : '#e8f5e9'};border-radius:8px;text-align:center;"><strong style="font-size:22px;color:${remainingWork ? '#c62828' : '#2e7d32'};">${remainingWork}</strong><br><small>Éléments restant à traiter</small></div>
         </div>
 
         <!-- Emails Envoyés -->
@@ -3283,18 +4948,52 @@
         </div>
         ` : ''}
 
+        <!-- Appels Téléphoniques Aircall -->
+        ${(aircallCalls || []).length > 0 ? `
+        <div class="section">
+            <h2 class="section-title" style="color: #ff8f00; border-color: #ff8f00;">📞 Appels Téléphoniques (${(aircallCalls || []).length}) - ${aircallInbound} entrants / ${aircallOutbound} sortants</h2>
+            <table>
+                <tr>
+                    <th style="width: 80px;">Heure</th>
+                    <th style="width: 80px;">Type</th>
+                    <th style="width: 150px;">Contact</th>
+                    <th style="width: 80px;">Durée</th>
+                    <th style="width: 80px;">Humeur</th>
+                    <th>Analyse de l’appel</th>
+                </tr>
+                ${(aircallCalls || []).map(c => `
+                <tr>
+                    <td>${c.time || ''}</td>
+                    <td>${c.type === 'sortant' ? '📤 Sortant' : '📥 Entrant'}</td>
+                    <td><strong>${Utils.escapeHtml(c.contact || 'Inconnu')}</strong></td>
+                    <td>${Utils.escapeHtml(c.duration || '0s')}</td>
+                    <td>${c.mood === 'Positif' ? '😊 Positif' : (c.mood === 'Négatif' ? '😟 Négatif' : (c.mood === 'Neutre' ? '😐 Neutre' : '-'))}</td>
+                    <td style="font-size: 12px;">
+                        ${c.summary ? `<strong>Résumé :</strong> ${Utils.escapeHtml(c.summary)}` : '<span style="color:#999;">Résumé indisponible</span>'}
+                        ${c.topics?.length ? `<br><strong>Sujets clés :</strong> ${c.topics.map(topic => Utils.escapeHtml(topic)).join(' · ')}` : ''}
+                        ${c.actionItems?.length ? `<br><strong>Actions :</strong><ul>${c.actionItems.map(action => `<li>${Utils.escapeHtml(action)}</li>`).join('')}</ul>` : ''}
+                        ${c.transcript ? `<details><summary>Voir la transcription</summary><div style="white-space:pre-wrap;font-size:11px;">${Utils.escapeHtml(c.transcript)}</div></details>` : ''}
+                    </td>
+                </tr>
+                `).join('')}
+            </table>
+        </div>
+        ` : ''}
+
         <!-- Tâches Terminées -->
         ${tasksCompleted.length > 0 ? `
         <div class="section">
             <h2 class="section-title orange">✅ Tâches Terminées (${tasksCompleted.length})</h2>
             <table>
                 <tr>
-                    <th style="width: 250px;">Tâche</th>
-                    <th style="width: 180px;">Client</th>
+                    <th style="width: 70px;">Heure</th>
+                    <th style="width: 220px;">Tâche</th>
+                    <th style="width: 150px;">Client</th>
                     <th>Contenu</th>
                 </tr>
                 ${tasksCompleted.map(t => `
                 <tr>
+                    <td style="text-align: center; font-weight: bold; color: #f57c00;">${t.closedTime || '-'}</td>
                     <td><strong>${Utils.escapeHtml(t.title || '')}</strong></td>
                     <td>
                         ${t.clientId ? `<a href="https://courtage.modulr.fr/fr/scripts/clients/clients_card.php?id=${t.clientId}" target="_blank">` : ''}
@@ -3425,53 +5124,62 @@
         </div>
         ` : ''}
 
+
+        ${notes ? `
+        <div class="section" style="background:#fffde7;">
+            <h2 class="section-title" style="color:#6d4c00;border-color:#f9a825;">🗒️ Notes et précisions</h2>
+            <div style="white-space:pre-wrap;">${Utils.escapeHtml(notes)}</div>
+        </div>` : ''}
+
         <!-- Footer -->
         <div class="footer">
-            <p>Rapport généré le ${new Date().toLocaleString('fr-FR')} par LTOA Modulr Script v4</p>
+            <p>Rapport généré le ${new Date().toLocaleString('fr-FR')} par LTOA Modulr Script v4.7</p>
         </div>
     </div>
 
-    <!-- Boutons de contrôle -->
-    <div style="text-align: center; margin: 20px;">
-        <button onclick="toggleClientView()" id="toggleBtn" style="
-            padding: 12px 25px;
-            background: linear-gradient(135deg, #9c27b0, #7b1fa2);
-            color: white;
-            border: none;
-            border-radius: 8px;
-            font-size: 14px;
-            font-weight: bold;
-            cursor: pointer;
-            box-shadow: 0 3px 10px rgba(0,0,0,0.2);
-        ">👥 Vue par Client</button>
+    <!-- Vue Chronologique (cachée par défaut) -->
+    <div id="view-chrono" class="report-container" style="display: none;">
+        <div class="header" style="background: linear-gradient(135deg, #9c27b0, #7b1fa2);">
+            <h1>🕐 Vue Chronologique</h1>
+            <p><strong>${Utils.escapeHtml(user)}</strong> - ${date}</p>
+        </div>
+        <div style="padding: 20px;">
+            ${this.generateChronoViewHTML()}
+        </div>
+        <div class="footer">
+            <p>Rapport généré le ${new Date().toLocaleString('fr-FR')} par LTOA Modulr Script v4.7</p>
+        </div>
     </div>
 
     <!-- Vue par Client (cachée par défaut) -->
-    <div id="clientView" class="report-container" style="display: none; margin-top: 20px;">
-        <div class="header" style="background: linear-gradient(135deg, #9c27b0, #7b1fa2);">
-            <h1>👥 Vue par Client</h1>
+    <div id="view-client" class="report-container" style="display: none;">
+        <div class="header" style="background: linear-gradient(135deg, #1565c0, #0d47a1);">
+            <h1>👤 Vue par Client</h1>
             <p>Toutes les actions groupées par client</p>
         </div>
         <div style="padding: 20px;">
             ${this.generateClientViewHTML()}
         </div>
+        <div class="footer">
+            <p>Rapport généré le ${new Date().toLocaleString('fr-FR')} par LTOA Modulr Script v4.7</p>
+        </div>
     </div>
 
     <script>
-        function toggleClientView() {
-            const cv = document.getElementById('clientView');
-            const btn = document.getElementById('toggleBtn');
-            if (cv.style.display === 'none') {
-                cv.style.display = 'block';
-                btn.textContent = '📋 Vue Chronologique';
-                btn.style.background = 'linear-gradient(135deg, #1976d2, #0d47a1)';
-                document.querySelector('.report-container').style.display = 'none';
-            } else {
-                cv.style.display = 'none';
-                btn.textContent = '👥 Vue par Client';
-                btn.style.background = 'linear-gradient(135deg, #9c27b0, #7b1fa2)';
-                document.querySelector('.report-container').style.display = 'block';
-            }
+        function showView(viewName) {
+            // Cacher toutes les vues
+            document.getElementById('view-categories').style.display = 'none';
+            document.getElementById('view-chrono').style.display = 'none';
+            document.getElementById('view-client').style.display = 'none';
+
+            // Afficher la vue demandée
+            document.getElementById('view-' + viewName).style.display = 'block';
+
+            // Mettre à jour les styles des boutons
+            document.getElementById('btn-categories').style.opacity = '0.6';
+            document.getElementById('btn-chrono').style.opacity = '0.6';
+            document.getElementById('btn-client').style.opacity = '0.6';
+            document.getElementById('btn-' + viewName).style.opacity = '1';
         }
 
         // Fonction pour déplier/replier les détails client
@@ -3504,11 +5212,238 @@
             alert(`✅ HTML exporté: ${a.download}\n\nVous pouvez l'ouvrir dans n'importe quel navigateur, l'imprimer ou le partager par email !`);
         },
 
+        // Générer le HTML de la vue chronologique pour l'export
+        generateChronoViewHTML() {
+            const { emailsSent, emailsAffected, aircallCalls, tasksCompleted, tasksOverdue, estimates, policies, claims, logs, user, date } = this.data;
+
+            // Fonctions utilitaires
+            const parseTime = (timeStr) => {
+                if (!timeStr) return null;
+                const parts = timeStr.split(':');
+                if (parts.length >= 2) {
+                    const hours = parseInt(parts[0], 10);
+                    const minutes = parseInt(parts[1], 10);
+                    const seconds = parts[2] ? parseInt(parts[2], 10) : 0;
+                    return hours * 3600 + minutes * 60 + seconds;
+                }
+                return null;
+            };
+
+            const extractTime = (dateStr) => {
+                if (!dateStr) return null;
+                const match = dateStr.match(/(\d{1,2}):(\d{2})/);
+                if (match) {
+                    return `${match[1].padStart(2, '0')}:${match[2]}`;
+                }
+                return null;
+            };
+
+            const formatDuration = (seconds) => {
+                const h = Math.floor(seconds / 3600);
+                const m = Math.floor((seconds % 3600) / 60);
+                if (h > 0) return `${h}h ${m}min`;
+                return `${m}min`;
+            };
+
+            // Collecter toutes les actions
+            const allActions = [];
+
+            // Emails envoyés
+            emailsSent.forEach(e => {
+                const time = e.time || extractTime(e.date);
+                if (time) {
+                    allActions.push({
+                        type: 'email_sent',
+                        icon: '📤',
+                        color: '#1976d2',
+                        label: 'Email envoyé',
+                        time: time,
+                        timeSeconds: parseTime(time),
+                        title: e.subject || 'Sans objet',
+                        detail: `À: ${e.to || e.toEmail || e.clientName || 'N/A'}`,
+                        summary: e.body
+                    });
+                }
+            });
+
+            // Emails affectés
+            emailsAffected.forEach(e => {
+                const time = e.time || extractTime(e.date);
+                if (time) {
+                    allActions.push({
+                        type: 'email_affected',
+                        icon: '📥',
+                        color: '#388e3c',
+                        label: 'Email affecté',
+                        time: time,
+                        timeSeconds: parseTime(time),
+                        title: e.subject || 'Sans objet',
+                        detail: `De: ${e.from || 'N/A'} → ${e.affectedTo || 'N/A'}`
+                    });
+                }
+            });
+
+            // Appels Aircall
+            (aircallCalls || []).forEach(c => {
+                const time = c.time;
+                if (time) {
+                    allActions.push({
+                        type: 'call',
+                        icon: c.type === 'sortant' ? '📞↗' : '📞↙',
+                        color: '#ff8f00',
+                        label: c.type === 'sortant' ? 'Appel sortant' : 'Appel entrant',
+                        time: time,
+                        timeSeconds: parseTime(time),
+                        title: c.contact || 'Inconnu',
+                        detail: `Durée: ${c.duration || '0s'}${c.mood ? ' | ' + c.mood : ''}`,
+                        summary: c.summary
+                    });
+                }
+            });
+
+            // Tâches terminées
+            tasksCompleted.forEach(t => {
+                const time = t.closedTime || extractTime(t.completedDate);
+                if (time) {
+                    allActions.push({
+                        type: 'task',
+                        icon: '✅',
+                        color: '#f57c00',
+                        label: 'Tâche terminée',
+                        time: time,
+                        timeSeconds: parseTime(time),
+                        title: t.title || 'Sans titre',
+                        detail: `Client: ${t.client || 'N/A'}`,
+                        summary: t.content
+                    });
+                }
+            });
+
+            // Trier par heure
+            allActions.sort((a, b) => {
+                if (a.timeSeconds === null) return 1;
+                if (b.timeSeconds === null) return -1;
+                return a.timeSeconds - b.timeSeconds;
+            });
+
+            if (allActions.length === 0) {
+                return '<p style="text-align: center; color: #999; padding: 40px;">Aucune activité avec heure à afficher</p>';
+            }
+
+            // Générer le bandeau temps de travail
+            let totalWorkTimeHTML = '';
+            if (allActions.length >= 2) {
+                const first = allActions[0];
+                const last = allActions[allActions.length - 1];
+                if (first.timeSeconds !== null && last.timeSeconds !== null) {
+                    const total = last.timeSeconds - first.timeSeconds;
+                    totalWorkTimeHTML = `
+                    <div style="
+                        background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+                        color: white;
+                        padding: 15px 20px;
+                        border-radius: 10px;
+                        margin-bottom: 20px;
+                        display: flex;
+                        justify-content: space-between;
+                        align-items: center;
+                    ">
+                        <div>
+                            <div style="font-size: 12px; opacity: 0.9;">Plage horaire de travail</div>
+                            <div style="font-size: 18px; font-weight: bold;">${first.time} → ${last.time}</div>
+                        </div>
+                        <div style="text-align: right;">
+                            <div style="font-size: 12px; opacity: 0.9;">Durée totale</div>
+                            <div style="font-size: 18px; font-weight: bold;">${formatDuration(total)}</div>
+                        </div>
+                    </div>`;
+                }
+            }
+
+            // Générer la timeline
+            let timelineHTML = totalWorkTimeHTML;
+            let prevAction = null;
+
+            for (const action of allActions) {
+                // Calculer temps écoulé depuis l'action précédente
+                let elapsedHTML = '';
+                if (prevAction && prevAction.timeSeconds !== null && action.timeSeconds !== null) {
+                    const elapsed = action.timeSeconds - prevAction.timeSeconds;
+                    if (elapsed > 60) {
+                        elapsedHTML = `
+                            <div style="text-align: center; padding: 8px 0; color: #999; font-size: 11px;">
+                                ⏱️ +${formatDuration(elapsed)}
+                            </div>`;
+                    }
+                }
+                prevAction = action;
+
+                timelineHTML += `
+                    ${elapsedHTML}
+                    <div style="display: flex; align-items: flex-start; padding: 10px 0;">
+                        <div style="
+                            width: 38px;
+                            height: 38px;
+                            border-radius: 50%;
+                            background: ${action.color};
+                            display: flex;
+                            align-items: center;
+                            justify-content: center;
+                            font-size: 16px;
+                            flex-shrink: 0;
+                            box-shadow: 0 2px 8px ${action.color}40;
+                        ">${action.icon}</div>
+                        <div style="
+                            flex: 1;
+                            margin-left: 15px;
+                            background: white;
+                            border: 1px solid #e0e0e0;
+                            border-radius: 8px;
+                            padding: 12px 15px;
+                            box-shadow: 0 1px 3px rgba(0,0,0,0.05);
+                        ">
+                            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 5px;">
+                                <span style="
+                                    background: ${action.color}20;
+                                    color: ${action.color};
+                                    padding: 2px 8px;
+                                    border-radius: 4px;
+                                    font-size: 11px;
+                                    font-weight: bold;
+                                ">${action.label}</span>
+                                <span style="font-size: 13px; color: #333; font-weight: bold;">🕐 ${action.time}</span>
+                            </div>
+                            <div style="font-size: 14px; font-weight: 600; color: #333; margin-bottom: 3px;">
+                                ${Utils.escapeHtml(action.title)}
+                            </div>
+                            <div style="font-size: 12px; color: #666;">
+                                ${Utils.escapeHtml(action.detail)}
+                            </div>
+                            ${action.summary ? `
+                                <div style="
+                                    margin-top: 8px;
+                                    padding: 8px;
+                                    background: #f9f9f9;
+                                    border-radius: 4px;
+                                    font-size: 11px;
+                                    color: #555;
+                                    border-left: 3px solid ${action.color};
+                                ">
+                                    ✨ ${Utils.escapeHtml(Utils.truncate(action.summary, 200))}
+                                </div>
+                            ` : ''}
+                        </div>
+                    </div>`;
+            }
+
+            return `<div style="background: #fafafa; padding: 15px; border-radius: 10px;">${timelineHTML}</div>`;
+        },
+
         // Générer le HTML de la vue par client pour l'export
         generateClientViewHTML() {
-            const { emailsSent, emailsAffected, tasksCompleted, tasksOverdue, estimates, policies, claims, clientIndex } = this.data;
+            const { emailsSent, emailsAffected, aircallCalls, tasksCompleted, tasksOverdue, estimates, policies, claims, logs, clientIndex } = this.data;
 
-            // Grouper par client
+            // Grouper par client (même logique que la modale)
             const clientsMap = new Map();
 
             const addToClient = (clientKey, clientName, clientId, clientEmail, category, item) => {
@@ -3524,11 +5459,13 @@
                         email: clientEmail || null,
                         emailsSent: [],
                         emailsAffected: [],
+                        aircallCalls: [],
                         tasksCompleted: [],
                         tasksOverdue: [],
                         estimates: [],
                         policies: [],
-                        claims: []
+                        claims: [],
+                        logs: []
                     });
                 }
 
@@ -3542,19 +5479,22 @@
                 }
             };
 
-            // Emails envoyés
+            // Grouper les données
             emailsSent.forEach(e => {
                 const key = e.clientId || e.toEmail?.toLowerCase() || 'unknown';
                 addToClient(key, e.clientName, e.clientId, e.toEmail, 'emailsSent', e);
             });
 
-            // Emails affectés
             emailsAffected.forEach(e => {
                 const key = e.clientId || e.affectedTo?.toLowerCase() || 'unknown';
                 addToClient(key, e.clientName || e.affectedTo, e.clientId, e.clientEmail, 'emailsAffected', e);
             });
 
-            // Tâches
+            (aircallCalls || []).forEach(c => {
+                const key = c.clientId || c.contact?.toLowerCase() || 'unknown';
+                addToClient(key, c.contact, c.clientId, null, 'aircallCalls', c);
+            });
+
             tasksCompleted.forEach(t => {
                 const key = t.clientId || t.client?.toLowerCase() || 'unknown';
                 addToClient(key, t.clientName || t.client, t.clientId, t.clientEmail, 'tasksCompleted', t);
@@ -3565,7 +5505,6 @@
                 addToClient(key, t.clientName || t.client, t.clientId, t.clientEmail, 'tasksOverdue', t);
             });
 
-            // Devis, Contrats, Sinistres
             estimates.forEach(e => {
                 const key = e.clientId || 'unknown';
                 addToClient(key, e.clientName, e.clientId, e.clientEmail, 'estimates', e);
@@ -3581,131 +5520,281 @@
                 addToClient(key, c.clientName, c.clientId, c.clientEmail, 'claims', c);
             });
 
-            // Trier: clients avec ID d'abord, puis par nom
-            const sortedClients = Array.from(clientsMap.entries()).sort((a, b) => {
-                if (a[0] === 'non_associé') return 1;
-                if (b[0] === 'non_associé') return -1;
-                if (a[1].id && !b[1].id) return -1;
-                if (!a[1].id && b[1].id) return 1;
-                return (a[1].name || '').localeCompare(b[1].name || '');
-            });
+            // Trier
+            const sortedClients = Array.from(clientsMap.values()).sort((a, b) => {
+                if (a.name === 'Non associé / Non résolu') return 1;
+                if (b.name === 'Non associé / Non résolu') return -1;
+                if (a.id && !b.id) return -1;
+                if (!a.id && b.id) return 1;
+                return (a.name || '').localeCompare(b.name || '');
+            }).filter(c =>
+                c.emailsSent.length + c.emailsAffected.length + c.aircallCalls.length +
+                c.tasksCompleted.length + c.tasksOverdue.length + c.estimates.length +
+                c.policies.length + c.claims.length > 0
+            );
 
             if (sortedClients.length === 0) {
-                return '<p style="text-align:center; color:#999;">Aucun client trouvé</p>';
+                return '<p style="text-align: center; color: #999; padding: 40px;">Aucun client trouvé</p>';
             }
 
-            // Générer le HTML
-            let html = '';
-            let clientIdx = 0;
+            // Générer le HTML identique à la modale
+            let html = '<div style="background: #f5f5f5; padding: 15px; border-radius: 10px;">';
 
-            for (const [key, client] of sortedClients) {
-                clientIdx++;
-                const totalActions = client.emailsSent.length + client.emailsAffected.length +
-                                   client.tasksCompleted.length + client.tasksOverdue.length +
-                                   client.estimates.length + client.policies.length + client.claims.length;
+            sortedClients.forEach((client, clientIdx) => {
+                const clientLink = client.id ?
+                    `https://courtage.modulr.fr/fr/scripts/clients/clients_card.php?id=${client.id}` : '#';
+                const cuid = 'exp_' + clientIdx;
 
                 html += `
-                <div style="border: 1px solid #ddd; border-radius: 10px; margin-bottom: 15px; overflow: hidden;">
-                    <div onclick="toggleClient('client-${clientIdx}')" style="
-                        background: linear-gradient(135deg, #f5f5f5, #e0e0e0);
-                        padding: 15px;
-                        cursor: pointer;
-                        display: flex;
-                        justify-content: space-between;
-                        align-items: center;
-                    ">
-                        <div>
-                            <span id="icon-client-${clientIdx}" style="margin-right: 10px;">▶</span>
-                            <strong style="font-size: 16px;">👤 ${Utils.escapeHtml(client.name)}</strong>
-                            ${client.id ? `<span style="background: #1976d2; color: white; padding: 2px 8px; border-radius: 10px; font-size: 11px; margin-left: 10px;">N° ${client.id}</span>` : ''}
-                            ${client.email ? `<br><span style="color: #666; font-size: 12px; margin-left: 25px;">📧 ${Utils.escapeHtml(client.email)}</span>` : ''}
-                        </div>
-                        <div style="display: flex; gap: 8px;">
-                            ${client.emailsSent.length > 0 ? `<span style="background: #e3f2fd; color: #1976d2; padding: 3px 8px; border-radius: 12px; font-size: 11px;">📤 ${client.emailsSent.length}</span>` : ''}
-                            ${client.emailsAffected.length > 0 ? `<span style="background: #e8f5e9; color: #388e3c; padding: 3px 8px; border-radius: 12px; font-size: 11px;">📥 ${client.emailsAffected.length}</span>` : ''}
-                            ${client.tasksCompleted.length > 0 ? `<span style="background: #fff3e0; color: #f57c00; padding: 3px 8px; border-radius: 12px; font-size: 11px;">✅ ${client.tasksCompleted.length}</span>` : ''}
-                            ${client.tasksOverdue.length > 0 ? `<span style="background: #ffebee; color: #d32f2f; padding: 3px 8px; border-radius: 12px; font-size: 11px;">⚠️ ${client.tasksOverdue.length}</span>` : ''}
-                            ${client.estimates.length > 0 ? `<span style="background: #e0f7fa; color: #0097a7; padding: 3px 8px; border-radius: 12px; font-size: 11px;">📋 ${client.estimates.length}</span>` : ''}
-                            ${client.policies.length > 0 ? `<span style="background: #e8eaf6; color: #3f51b5; padding: 3px 8px; border-radius: 12px; font-size: 11px;">📄 ${client.policies.length}</span>` : ''}
-                            ${client.claims.length > 0 ? `<span style="background: #fce4ec; color: #c2185b; padding: 3px 8px; border-radius: 12px; font-size: 11px;">🚨 ${client.claims.length}</span>` : ''}
+                <div style="background: white; border-radius: 12px; margin-bottom: 20px; overflow: hidden; box-shadow: 0 2px 10px rgba(0,0,0,0.08);">
+                    <!-- En-tête client avec gradient -->
+                    <div style="background: linear-gradient(135deg, #1565c0 0%, #0d47a1 100%); color: white; padding: 18px 22px;">
+                        <div style="display: flex; justify-content: space-between; align-items: flex-start;">
+                            <div>
+                                <a href="${clientLink}" target="_blank" style="color: white; text-decoration: none; font-size: 18px; font-weight: 600;">
+                                    👤 ${Utils.escapeHtml(client.name)}
+                                </a>
+                                ${client.id ? `<span style="background: rgba(255,255,255,0.2); padding: 3px 10px; border-radius: 12px; font-size: 11px; margin-left: 10px;">N° ${client.id}</span>` : ''}
+                                ${client.email ? `<div style="opacity: 0.8; font-size: 12px; margin-top: 5px;">📧 ${Utils.escapeHtml(client.email)}</div>` : ''}
+                            </div>
+                            <div style="display: flex; gap: 6px; flex-wrap: wrap;">
+                                ${client.emailsSent.length > 0 ? `<span style="background: #2196f3; padding: 4px 12px; border-radius: 15px; font-size: 11px; font-weight: 500;">📤 ${client.emailsSent.length}</span>` : ''}
+                                ${client.emailsAffected.length > 0 ? `<span style="background: #4caf50; padding: 4px 12px; border-radius: 15px; font-size: 11px; font-weight: 500;">📥 ${client.emailsAffected.length}</span>` : ''}
+                                ${client.aircallCalls.length > 0 ? `<span style="background: #ff9800; padding: 4px 12px; border-radius: 15px; font-size: 11px; font-weight: 500;">📞 ${client.aircallCalls.length}</span>` : ''}
+                                ${client.tasksCompleted.length > 0 ? `<span style="background: #ff5722; padding: 4px 12px; border-radius: 15px; font-size: 11px; font-weight: 500;">✅ ${client.tasksCompleted.length}</span>` : ''}
+                            </div>
                         </div>
                     </div>
-                    <div id="client-${clientIdx}" style="display: none; padding: 15px; background: #fafafa;">
-                        ${this.generateClientDetailsHTML(client)}
-                    </div>
-                </div>`;
-            }
 
+                    <!-- Contenu avec cartes colorées -->
+                    <div style="padding: 18px; display: grid; gap: 12px;">
+
+                        ${client.emailsSent.length > 0 ? `
+                        <div style="background: linear-gradient(135deg, #e3f2fd 0%, #bbdefb 100%); border-radius: 10px; padding: 15px; border-left: 4px solid #1976d2;">
+                            <div style="font-weight: 600; color: #1565c0; margin-bottom: 10px; font-size: 14px;">📤 Emails envoyés (${client.emailsSent.length})</div>
+                            ${client.emailsSent.map((e, eIdx) => `
+                                <div style="background: white; border-radius: 6px; padding: 10px; margin-bottom: 6px;">
+                                    <div style="display: flex; justify-content: space-between;">
+                                        <strong style="color: #333; font-size: 13px;">${Utils.escapeHtml(e.subject || 'Sans objet')}</strong>
+                                        <span style="color: #1976d2; font-size: 11px; font-weight: 500;">${e.time || ''}</span>
+                                    </div>
+                                    ${e.body ? `
+                                        <div id="email_short_${cuid}_${eIdx}" style="color: #666; font-size: 12px; margin-top: 6px; line-height: 1.4;">${Utils.escapeHtml(Utils.truncate(e.body, 150))}</div>
+                                        ${e.body.length > 150 ? `
+                                            <div id="email_full_${cuid}_${eIdx}" style="display: none; color: #666; font-size: 12px; margin-top: 6px; line-height: 1.4; white-space: pre-wrap;">${Utils.escapeHtml(e.body)}</div>
+                                            <button onclick="var s=document.getElementById('email_short_${cuid}_${eIdx}');var f=document.getElementById('email_full_${cuid}_${eIdx}');if(f.style.display==='none'){f.style.display='block';s.style.display='none';this.textContent='▲ Réduire';}else{f.style.display='none';s.style.display='block';this.textContent='▼ Voir plus';}" style="background: #1976d2; color: white; border: none; padding: 4px 10px; border-radius: 4px; font-size: 11px; cursor: pointer; margin-top: 6px;">▼ Voir plus</button>
+                                        ` : ''}
+                                    ` : ''}
+                                </div>
+                            `).join('')}
+                        </div>
+                        ` : ''}
+
+                        ${client.emailsAffected.length > 0 ? `
+                        <div style="background: linear-gradient(135deg, #e8f5e9 0%, #c8e6c9 100%); border-radius: 10px; padding: 15px; border-left: 4px solid #388e3c;">
+                            <div style="font-weight: 600; color: #2e7d32; margin-bottom: 10px; font-size: 14px;">📥 Emails reçus/affectés (${client.emailsAffected.length})</div>
+                            ${client.emailsAffected.map(e => `
+                                <div style="background: white; border-radius: 6px; padding: 10px; margin-bottom: 6px;">
+                                    <strong style="color: #333; font-size: 13px;">${Utils.escapeHtml(e.subject || 'Sans objet')}</strong>
+                                    <div style="color: #666; font-size: 11px; margin-top: 4px;">De: ${Utils.escapeHtml(e.from || '')} → ${Utils.escapeHtml(e.affectedTo || '')}</div>
+                                </div>
+                            `).join('')}
+                        </div>
+                        ` : ''}
+
+                        ${client.aircallCalls.length > 0 ? `
+                        <div style="background: linear-gradient(135deg, #fff3e0 0%, #ffe0b2 100%); border-radius: 10px; padding: 15px; border-left: 4px solid #f57c00;">
+                            <div style="font-weight: 600; color: #e65100; margin-bottom: 10px; font-size: 14px;">📞 Appels téléphoniques (${client.aircallCalls.length})</div>
+                            ${client.aircallCalls.map(call => {
+                                const bgColor = call.type === 'sortant' ? '#fff8e1' : '#e8f5e9';
+                                const borderColor = call.type === 'sortant' ? '#ffb300' : '#66bb6a';
+                                const moodIcon = call.mood === 'Positif' ? '😊' : (call.mood === 'Négatif' ? '😟' : (call.mood === 'Neutre' ? '😐' : ''));
+                                return `
+                                <div style="background: ${bgColor}; border-radius: 8px; padding: 12px; margin-bottom: 8px; border-left: 3px solid ${borderColor};">
+                                    <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px;">
+                                        <span style="font-weight: 600; color: #333;">
+                                            ${call.type === 'sortant' ? '📤 Sortant' : '📥 Entrant'}
+                                            <span style="font-weight: normal; color: #666;">• ${call.duration || ''}</span>
+                                            ${moodIcon ? `<span style="margin-left: 8px;">${moodIcon}</span>` : ''}
+                                        </span>
+                                        <span style="color: #888; font-size: 11px;">${call.time || ''}</span>
+                                    </div>
+                                    ${call.summary ? `
+                                    <div style="background: white; border-radius: 6px; padding: 10px; font-size: 12px; color: #555; line-height: 1.5;">
+                                        <div style="color: #ff8f00; font-size: 10px; font-weight: 600; margin-bottom: 4px;">💬 RÉSUMÉ IA</div>
+                                        ${Utils.escapeHtml(call.summary)}
+                                    </div>
+                                    ` : ''}
+                                </div>
+                                `;
+                            }).join('')}
+                        </div>
+                        ` : ''}
+
+                        ${client.tasksCompleted.length > 0 ? `
+                        <div style="background: linear-gradient(135deg, #fff8e1 0%, #ffecb3 100%); border-radius: 10px; padding: 15px; border-left: 4px solid #ff8f00;">
+                            <div style="font-weight: 600; color: #e65100; margin-bottom: 10px; font-size: 14px;">✅ Tâches terminées (${client.tasksCompleted.length})</div>
+                            ${client.tasksCompleted.map((t, tIdx) => `
+                                <div style="background: white; border-radius: 6px; padding: 10px; margin-bottom: 6px;">
+                                    <div style="display: flex; justify-content: space-between; align-items: flex-start;">
+                                        <strong style="color: #333; font-size: 13px;">${Utils.escapeHtml(t.title)}</strong>
+                                        ${t.closedTime ? `<span style="background: #ff8f00; color: white; padding: 2px 8px; border-radius: 10px; font-size: 10px;">⏰ ${t.closedTime}</span>` : ''}
+                                    </div>
+                                    ${t.content ? `
+                                        <div id="task_short_${cuid}_${tIdx}" style="color: #666; font-size: 12px; margin-top: 6px; line-height: 1.4;">${Utils.escapeHtml(Utils.truncate(t.content, 120))}</div>
+                                        ${t.content.length > 120 ? `
+                                            <div id="task_full_${cuid}_${tIdx}" style="display: none; color: #666; font-size: 12px; margin-top: 6px; line-height: 1.4; white-space: pre-wrap;">${Utils.escapeHtml(t.content)}</div>
+                                            <button onclick="var s=document.getElementById('task_short_${cuid}_${tIdx}');var f=document.getElementById('task_full_${cuid}_${tIdx}');if(f.style.display==='none'){f.style.display='block';s.style.display='none';this.textContent='▲ Réduire';}else{f.style.display='none';s.style.display='block';this.textContent='▼ Voir plus';}" style="background: #ff8f00; color: white; border: none; padding: 4px 10px; border-radius: 4px; font-size: 11px; cursor: pointer; margin-top: 6px;">▼ Voir plus</button>
+                                        ` : ''}
+                                    ` : ''}
+                                </div>
+                            `).join('')}
+                        </div>
+                        ` : ''}
+
+                        ${client.tasksOverdue.length > 0 ? `
+                        <div style="background: linear-gradient(135deg, #ffebee 0%, #ffcdd2 100%); border-radius: 10px; padding: 15px; border-left: 4px solid #d32f2f;">
+                            <div style="font-weight: 600; color: #c62828; margin-bottom: 10px; font-size: 14px;">⚠️ Tâches en retard (${client.tasksOverdue.length})</div>
+                            ${client.tasksOverdue.map(t => `
+                                <div style="background: white; border-radius: 6px; padding: 10px; margin-bottom: 6px;">
+                                    <strong style="color: #333; font-size: 13px;">${Utils.escapeHtml(t.title)}</strong>
+                                    <div style="color: #d32f2f; font-size: 11px; margin-top: 4px;">${t.daysOverdue}j de retard • → ${Utils.escapeHtml(t.assignedTo || 'N/A')}</div>
+                                </div>
+                            `).join('')}
+                        </div>
+                        ` : ''}
+
+                        ${(client.estimates.length > 0 || client.policies.length > 0 || client.claims.length > 0) ? `
+                        <div style="background: linear-gradient(135deg, #f3e5f5 0%, #e1bee7 100%); border-radius: 10px; padding: 15px; border-left: 4px solid #7b1fa2;">
+                            <div style="font-weight: 600; color: #6a1b9a; margin-bottom: 10px; font-size: 14px;">📄 Documents (${client.estimates.length + client.policies.length + client.claims.length})</div>
+                            <div style="display: flex; flex-wrap: wrap; gap: 8px;">
+                                ${client.estimates.map(e => `<span style="background: white; color: #7b1fa2; padding: 6px 12px; border-radius: 6px; font-size: 12px;">📋 Devis ${e.entityId || ''}</span>`).join('')}
+                                ${client.policies.map(p => `<span style="background: white; color: #00796b; padding: 6px 12px; border-radius: 6px; font-size: 12px;">📄 Contrat ${p.entityId || ''}</span>`).join('')}
+                                ${client.claims.map(c => `<span style="background: white; color: #c62828; padding: 6px 12px; border-radius: 6px; font-size: 12px;">🚨 Sinistre ${c.entityId || ''}</span>`).join('')}
+                            </div>
+                        </div>
+                        ` : ''}
+                    </div>
+                </div>
+                `;
+            });
+
+            html += '</div>';
             return html;
         },
 
         // Générer les détails d'un client pour l'export HTML
-        generateClientDetailsHTML(client) {
-            let html = '';
+        generateClientDetailsHTML(client, clientIdx) {
+            let html = '<div style="display: grid; gap: 12px;">';
+            const cuid = 'exp_' + clientIdx;
 
             if (client.emailsSent.length > 0) {
-                html += `<div style="margin-bottom: 15px;">
-                    <h4 style="color: #1976d2; margin-bottom: 8px;">📤 Emails Envoyés (${client.emailsSent.length})</h4>
-                    <ul style="margin: 0; padding-left: 20px;">
-                        ${client.emailsSent.map(e => `<li style="margin-bottom: 5px;"><strong>${Utils.escapeHtml(e.subject || 'Sans objet')}</strong> <span style="color:#666;">(${e.time || ''})</span></li>`).join('')}
-                    </ul>
+                html += `<div style="background: linear-gradient(135deg, #e3f2fd 0%, #bbdefb 100%); border-radius: 10px; padding: 15px; border-left: 4px solid #1976d2;">
+                    <div style="font-weight: 600; color: #1565c0; margin-bottom: 10px; font-size: 14px;">📤 Emails envoyés (${client.emailsSent.length})</div>
+                    ${client.emailsSent.map((e, eIdx) => `
+                        <div style="background: white; border-radius: 6px; padding: 10px; margin-bottom: 6px;">
+                            <div style="display: flex; justify-content: space-between;">
+                                <strong style="color: #333; font-size: 13px;">${Utils.escapeHtml(e.subject || 'Sans objet')}</strong>
+                                <span style="color: #1976d2; font-size: 11px; font-weight: 500;">${e.time || ''}</span>
+                            </div>
+                            ${e.body ? `
+                                <div id="email_short_${cuid}_${eIdx}" style="color: #666; font-size: 12px; margin-top: 6px; line-height: 1.4;">${Utils.escapeHtml(Utils.truncate(e.body, 150))}</div>
+                                ${e.body.length > 150 ? `
+                                    <div id="email_full_${cuid}_${eIdx}" style="display: none; color: #666; font-size: 12px; margin-top: 6px; line-height: 1.4; white-space: pre-wrap;">${Utils.escapeHtml(e.body)}</div>
+                                    <button onclick="var s=document.getElementById('email_short_${cuid}_${eIdx}');var f=document.getElementById('email_full_${cuid}_${eIdx}');if(f.style.display==='none'){f.style.display='block';s.style.display='none';this.textContent='▲ Réduire';}else{f.style.display='none';s.style.display='block';this.textContent='▼ Voir plus';}" style="background: #1976d2; color: white; border: none; padding: 4px 10px; border-radius: 4px; font-size: 11px; cursor: pointer; margin-top: 6px;">▼ Voir plus</button>
+                                ` : ''}
+                            ` : ''}
+                        </div>
+                    `).join('')}
                 </div>`;
             }
 
             if (client.emailsAffected.length > 0) {
-                html += `<div style="margin-bottom: 15px;">
-                    <h4 style="color: #388e3c; margin-bottom: 8px;">📥 Emails Affectés (${client.emailsAffected.length})</h4>
-                    <ul style="margin: 0; padding-left: 20px;">
-                        ${client.emailsAffected.map(e => `<li style="margin-bottom: 5px;"><strong>${Utils.escapeHtml(e.subject || 'Sans objet')}</strong> <span style="color:#666;">de ${Utils.escapeHtml(e.from || '')}</span></li>`).join('')}
-                    </ul>
+                html += `<div style="background: linear-gradient(135deg, #e8f5e9 0%, #c8e6c9 100%); border-radius: 10px; padding: 15px; border-left: 4px solid #388e3c;">
+                    <div style="font-weight: 600; color: #2e7d32; margin-bottom: 10px; font-size: 14px;">📥 Emails reçus/affectés (${client.emailsAffected.length})</div>
+                    ${client.emailsAffected.map(e => `
+                        <div style="background: white; border-radius: 6px; padding: 10px; margin-bottom: 6px;">
+                            <strong style="color: #333; font-size: 13px;">${Utils.escapeHtml(e.subject || 'Sans objet')}</strong>
+                            <div style="color: #666; font-size: 11px; margin-top: 4px;">De: ${Utils.escapeHtml(e.from || '')} → ${Utils.escapeHtml(e.affectedTo || '')}</div>
+                        </div>
+                    `).join('')}
+                </div>`;
+            }
+
+            if (client.aircallCalls && client.aircallCalls.length > 0) {
+                html += `<div style="background: linear-gradient(135deg, #fff3e0 0%, #ffe0b2 100%); border-radius: 10px; padding: 15px; border-left: 4px solid #f57c00;">
+                    <div style="font-weight: 600; color: #e65100; margin-bottom: 10px; font-size: 14px;">📞 Appels téléphoniques (${client.aircallCalls.length})</div>
+                    ${client.aircallCalls.map(call => {
+                        const bgColor = call.type === 'sortant' ? '#fff8e1' : '#e8f5e9';
+                        const borderColor = call.type === 'sortant' ? '#ffb300' : '#66bb6a';
+                        const moodIcon = call.mood === 'Positif' ? '😊' : (call.mood === 'Négatif' ? '😟' : (call.mood === 'Neutre' ? '😐' : ''));
+                        return `
+                        <div style="background: ${bgColor}; border-radius: 8px; padding: 12px; margin-bottom: 8px; border-left: 3px solid ${borderColor};">
+                            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px;">
+                                <span style="font-weight: 600; color: #333;">
+                                    ${call.type === 'sortant' ? '📤 Sortant' : '📥 Entrant'}
+                                    <span style="font-weight: normal; color: #666;">• ${call.duration || ''}</span>
+                                    ${moodIcon ? `<span style="margin-left: 8px;">${moodIcon}</span>` : ''}
+                                </span>
+                                <span style="color: #888; font-size: 11px;">${call.time || ''}</span>
+                            </div>
+                            ${call.summary ? `
+                            <div style="background: white; border-radius: 6px; padding: 10px; font-size: 12px; color: #555; line-height: 1.5;">
+                                <div style="color: #ff8f00; font-size: 10px; font-weight: 600; margin-bottom: 4px;">💬 RÉSUMÉ IA</div>
+                                ${Utils.escapeHtml(call.summary)}
+                            </div>
+                            ` : ''}
+                        </div>
+                        `;
+                    }).join('')}
                 </div>`;
             }
 
             if (client.tasksCompleted.length > 0) {
-                html += `<div style="margin-bottom: 15px;">
-                    <h4 style="color: #f57c00; margin-bottom: 8px;">✅ Tâches Terminées (${client.tasksCompleted.length})</h4>
-                    <ul style="margin: 0; padding-left: 20px;">
-                        ${client.tasksCompleted.map(t => `<li style="margin-bottom: 5px;"><strong>${Utils.escapeHtml(t.title || '')}</strong></li>`).join('')}
-                    </ul>
+                html += `<div style="background: linear-gradient(135deg, #fff8e1 0%, #ffecb3 100%); border-radius: 10px; padding: 15px; border-left: 4px solid #ff8f00;">
+                    <div style="font-weight: 600; color: #e65100; margin-bottom: 10px; font-size: 14px;">✅ Tâches terminées (${client.tasksCompleted.length})</div>
+                    ${client.tasksCompleted.map((t, tIdx) => `
+                        <div style="background: white; border-radius: 6px; padding: 10px; margin-bottom: 6px;">
+                            <div style="display: flex; justify-content: space-between; align-items: flex-start;">
+                                <strong style="color: #333; font-size: 13px;">${Utils.escapeHtml(t.title)}</strong>
+                                ${t.closedTime ? `<span style="background: #ff8f00; color: white; padding: 2px 8px; border-radius: 10px; font-size: 10px;">⏰ ${t.closedTime}</span>` : ''}
+                            </div>
+                            ${t.content ? `
+                                <div id="task_short_${cuid}_${tIdx}" style="color: #666; font-size: 12px; margin-top: 6px; line-height: 1.4;">${Utils.escapeHtml(Utils.truncate(t.content, 120))}</div>
+                                ${t.content.length > 120 ? `
+                                    <div id="task_full_${cuid}_${tIdx}" style="display: none; color: #666; font-size: 12px; margin-top: 6px; line-height: 1.4; white-space: pre-wrap;">${Utils.escapeHtml(t.content)}</div>
+                                    <button onclick="var s=document.getElementById('task_short_${cuid}_${tIdx}');var f=document.getElementById('task_full_${cuid}_${tIdx}');if(f.style.display==='none'){f.style.display='block';s.style.display='none';this.textContent='▲ Réduire';}else{f.style.display='none';s.style.display='block';this.textContent='▼ Voir plus';}" style="background: #ff8f00; color: white; border: none; padding: 4px 10px; border-radius: 4px; font-size: 11px; cursor: pointer; margin-top: 6px;">▼ Voir plus</button>
+                                ` : ''}
+                            ` : ''}
+                        </div>
+                    `).join('')}
                 </div>`;
             }
 
             if (client.tasksOverdue.length > 0) {
-                html += `<div style="margin-bottom: 15px;">
-                    <h4 style="color: #d32f2f; margin-bottom: 8px;">⚠️ Tâches en Retard (${client.tasksOverdue.length})</h4>
-                    <ul style="margin: 0; padding-left: 20px;">
-                        ${client.tasksOverdue.map(t => `<li style="margin-bottom: 5px;"><strong>${Utils.escapeHtml(t.title || '')}</strong> <span style="color:#d32f2f;">(${t.daysOverdue || '?'}j)</span></li>`).join('')}
-                    </ul>
+                html += `<div style="background: linear-gradient(135deg, #ffebee 0%, #ffcdd2 100%); border-radius: 10px; padding: 15px; border-left: 4px solid #d32f2f;">
+                    <div style="font-weight: 600; color: #c62828; margin-bottom: 10px; font-size: 14px;">⚠️ Tâches en retard (${client.tasksOverdue.length})</div>
+                    ${client.tasksOverdue.map(t => `
+                        <div style="background: white; border-radius: 6px; padding: 10px; margin-bottom: 6px;">
+                            <strong style="color: #333; font-size: 13px;">${Utils.escapeHtml(t.title)}</strong>
+                            <div style="color: #d32f2f; font-size: 11px; margin-top: 4px;">${t.daysOverdue}j de retard • → ${Utils.escapeHtml(t.assignedTo || 'N/A')}</div>
+                        </div>
+                    `).join('')}
                 </div>`;
             }
 
-            if (client.estimates.length > 0) {
-                html += `<div style="margin-bottom: 15px;">
-                    <h4 style="color: #0097a7; margin-bottom: 8px;">📋 Devis (${client.estimates.length})</h4>
-                    <ul style="margin: 0; padding-left: 20px;">
-                        ${client.estimates.map(e => `<li style="margin-bottom: 5px;">${e.action || ''} - ${Utils.escapeHtml(e.entityName || '')}</li>`).join('')}
-                    </ul>
+            if (client.estimates.length > 0 || client.policies.length > 0 || client.claims.length > 0) {
+                html += `<div style="background: linear-gradient(135deg, #f3e5f5 0%, #e1bee7 100%); border-radius: 10px; padding: 15px; border-left: 4px solid #7b1fa2;">
+                    <div style="font-weight: 600; color: #6a1b9a; margin-bottom: 10px; font-size: 14px;">📄 Documents (${client.estimates.length + client.policies.length + client.claims.length})</div>
+                    <div style="display: flex; flex-wrap: wrap; gap: 8px;">
+                        ${client.estimates.map(e => `<span style="background: white; color: #7b1fa2; padding: 6px 12px; border-radius: 6px; font-size: 12px;">📋 Devis ${e.entityId || ''}</span>`).join('')}
+                        ${client.policies.map(p => `<span style="background: white; color: #00796b; padding: 6px 12px; border-radius: 6px; font-size: 12px;">📄 Contrat ${p.entityId || ''}</span>`).join('')}
+                        ${client.claims.map(c => `<span style="background: white; color: #c62828; padding: 6px 12px; border-radius: 6px; font-size: 12px;">🚨 Sinistre ${c.entityId || ''}</span>`).join('')}
+                    </div>
                 </div>`;
             }
 
-            if (client.policies.length > 0) {
-                html += `<div style="margin-bottom: 15px;">
-                    <h4 style="color: #3f51b5; margin-bottom: 8px;">📄 Contrats (${client.policies.length})</h4>
-                    <ul style="margin: 0; padding-left: 20px;">
-                        ${client.policies.map(p => `<li style="margin-bottom: 5px;">${p.action || ''} - ${Utils.escapeHtml(p.entityName || '')}</li>`).join('')}
-                    </ul>
-                </div>`;
-            }
-
-            if (client.claims.length > 0) {
-                html += `<div style="margin-bottom: 15px;">
-                    <h4 style="color: #c2185b; margin-bottom: 8px;">🚨 Sinistres (${client.claims.length})</h4>
-                    <ul style="margin: 0; padding-left: 20px;">
-                        ${client.claims.map(c => `<li style="margin-bottom: 5px;">${c.action || ''} - ${Utils.escapeHtml(c.entityName || '')}</li>`).join('')}
-                    </ul>
-                </div>`;
-            }
-
+            html += '</div>';
             return html || '<p style="color: #999;">Aucune action</p>';
         }
     };
@@ -3714,6 +5803,13 @@
     // LOADER UI
     // ============================================
     function showLoader() {
+        const reportDate = Utils.getTodayDate();
+        const realToday = Utils.getRealTodayDate();
+        const isPastDate = reportDate !== realToday;
+        const dateDisplay = isPastDate
+            ? `📅 <span style="color: #ff9800; font-weight: bold;">${reportDate}</span> <span style="background: #ff9800; color: white; padding: 2px 8px; border-radius: 3px; font-size: 11px;">Rétrospectif</span>`
+            : `📅 ${reportDate}`;
+
         const loader = document.createElement('div');
         loader.id = 'ltoa-loader';
         loader.innerHTML = `
@@ -3742,6 +5838,7 @@
                 ">
                     <div style="font-size: 60px; margin-bottom: 20px;" id="loader-emoji">⏳</div>
                     <h2 style="color: #333; margin: 0 0 10px 0;" id="loader-title">Génération du rapport...</h2>
+                    <p style="color: #666; margin: 0 0 5px 0; font-size: 14px;">${dateDisplay}</p>
                     <p style="color: #666; margin: 0 0 20px 0; min-height: 20px;" id="loader-status">Initialisation...</p>
 
                     <div style="width: 300px; height: 8px; background: #e0e0e0; border-radius: 4px; overflow: hidden; margin-bottom: 30px;">
@@ -3828,41 +5925,59 @@
             await Utils.delay(CONFIG.DELAY_BETWEEN_REQUESTS);
 
             // Étape 2: Emails affectés
-            loader.update(2, 15, 'Collecte des emails affectés...');
+            loader.update(2, 10, 'Collecte des emails affectés...');
             const emailsAffected = await EmailsAffectedCollector.collect(connectedUser, loader.updateStatus);
             await Utils.delay(CONFIG.DELAY_BETWEEN_REQUESTS);
 
-            // Étape 3: Tâches terminées
-            loader.update(3, 30, 'Collecte des tâches terminées...');
+            // Étape 2b: Nombre d'emails en attente
+            loader.update(2, 15, 'Comptage emails en attente...');
+            const pendingEmailsCount = await PendingEmailsCollector.collect(connectedUser, loader.updateStatus);
+            await Utils.delay(CONFIG.DELAY_BETWEEN_REQUESTS);
+
+            // Étape 3: Appels Aircall
+            loader.update(3, 20, 'Collecte des appels Aircall...');
+            let aircallCalls = [];
+            if (CONFIG.AIRCALL_ENABLED) {
+                try {
+                    aircallCalls = await AircallCollector.collect(connectedUser, loader.updateStatus);
+                    Utils.log(`${aircallCalls.length} appels Aircall collectés`);
+                } catch (e) {
+                    Utils.log('Erreur collecte Aircall (non bloquante):', e);
+                }
+            }
+            await Utils.delay(CONFIG.DELAY_BETWEEN_REQUESTS);
+
+            // Étape 4: Tâches terminées
+            loader.update(4, 35, 'Collecte des tâches terminées...');
             const tasksCompleted = await TasksCompletedCollector.collect(userId, connectedUser, loader.updateStatus);
             await Utils.delay(CONFIG.DELAY_BETWEEN_REQUESTS);
 
-            // Étape 4: Tâches en retard
-            loader.update(4, 45, 'Collecte des tâches en retard...');
+            // Étape 5: Tâches en retard
+            loader.update(5, 48, 'Collecte des tâches en retard...');
             const tasksOverdue = await TasksOverdueCollector.collect(userId, connectedUser, loader.updateStatus);
             await Utils.delay(CONFIG.DELAY_BETWEEN_REQUESTS);
 
-            // Étape 5: Devis
-            loader.update(5, 55, 'Collecte des devis...');
+            // Étape 6: Devis
+            loader.update(6, 58, 'Collecte des devis...');
             const estimates = await LogsCollector.collectEstimates(userId, connectedUser, loader.updateStatus);
             await Utils.delay(CONFIG.DELAY_BETWEEN_REQUESTS);
 
-            // Étape 6: Contrats
-            loader.update(6, 70, 'Collecte des contrats...');
+            // Étape 7: Contrats
+            loader.update(7, 72, 'Collecte des contrats...');
             const policies = await LogsCollector.collectPolicies(userId, connectedUser, loader.updateStatus);
             await Utils.delay(CONFIG.DELAY_BETWEEN_REQUESTS);
 
-            // Étape 7: Sinistres
-            loader.update(7, 80, 'Collecte des sinistres...');
+            // Étape 8: Sinistres
+            loader.update(8, 82, 'Collecte des sinistres...');
             const claims = await LogsCollector.collectClaims(userId, connectedUser, loader.updateStatus);
             await Utils.delay(CONFIG.DELAY_BETWEEN_REQUESTS);
 
-            // Étape 8: Autres actions (journalisation générale)
-            loader.update(8, 85, 'Collecte des autres actions...');
+            // Étape 9: Autres actions (journalisation générale)
+            loader.update(9, 88, 'Collecte des autres actions...');
             const logs = await LogsCollector.collect(userId, connectedUser, loader.updateStatus);
 
-            // Étape 9: Résolution des clients (correspondance email <-> N° client <-> nom)
-            loader.update(9, 92, 'Résolution des clients...');
+            // Étape 10: Résolution des clients (correspondance email <-> N° client <-> nom)
+            loader.update(10, 94, 'Résolution des clients...');
             ClientResolver.reset(); // Réinitialiser pour un nouveau rapport
             const resolvedData = await ClientResolver.resolve({
                 emailsSent,
@@ -3882,12 +5997,16 @@
             ReportGenerator.data = {
                 emailsSent: resolvedData.emailsSent,
                 emailsAffected: resolvedData.emailsAffected,
+                pendingEmailsCount: pendingEmailsCount, // Nombre d'emails en attente
+                aircallCalls: aircallCalls, // Ajouter les appels Aircall
                 tasksCompleted: resolvedData.tasksCompleted,
                 tasksOverdue: resolvedData.tasksOverdue,
                 logs: resolvedData.logs,
                 estimates: resolvedData.estimates,
                 policies: resolvedData.policies,
                 claims: resolvedData.claims,
+                notes: REPORT_NOTES,
+                aircallStatus: AircallCollector.lastStatus,
                 user: connectedUser,
                 date: Utils.getTodayDate(),
                 clientIndex: ClientResolver.clientIndex // Garder l'index pour la vue par client
@@ -3908,7 +6027,248 @@
     // ============================================
     let reportGenerated = false;
 
-    function handleReportClick() {
+    // Afficher le sélecteur de date
+    function showDatePicker() {
+        return new Promise((resolve) => {
+            // Supprimer un éventuel picker existant
+            const existing = document.getElementById('ltoa-date-picker-modal');
+            if (existing) existing.remove();
+
+            // Calculer les dates pour les boutons rapides
+            const today = new Date();
+            const formatDate = (d) => {
+                const day = String(d.getDate()).padStart(2, '0');
+                const month = String(d.getMonth() + 1).padStart(2, '0');
+                const year = d.getFullYear();
+                return `${day}/${month}/${year}`;
+            };
+            const formatDateInput = (d) => {
+                const day = String(d.getDate()).padStart(2, '0');
+                const month = String(d.getMonth() + 1).padStart(2, '0');
+                const year = d.getFullYear();
+                return `${year}-${month}-${day}`;
+            };
+
+            const yesterday = new Date(today);
+            yesterday.setDate(yesterday.getDate() - 1);
+
+            const twoDaysAgo = new Date(today);
+            twoDaysAgo.setDate(twoDaysAgo.getDate() - 2);
+
+            const modal = document.createElement('div');
+            modal.id = 'ltoa-date-picker-modal';
+            modal.innerHTML = `
+                <div style="
+                    position: fixed;
+                    top: 0; left: 0; right: 0; bottom: 0;
+                    background: rgba(0,0,0,0.5);
+                    z-index: 2147483646;
+                    display: flex;
+                    align-items: center;
+                    justify-content: center;
+                ">
+                    <div style="
+                        background: white;
+                        border-radius: 12px;
+                        padding: 25px;
+                        min-width: 350px;
+                        box-shadow: 0 10px 40px rgba(0,0,0,0.3);
+                        font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+                    ">
+                        <h3 style="margin: 0 0 20px 0; color: #333; font-size: 18px; display: flex; align-items: center; gap: 10px;">
+                            📅 Choisir la date du rapport
+                        </h3>
+
+                        <div style="margin-bottom: 20px;">
+                            <label style="display: block; margin-bottom: 8px; color: #666; font-size: 13px;">
+                                Sélectionner une date :
+                            </label>
+                            <input type="date" id="ltoa-date-input" value="${formatDateInput(today)}" max="${formatDateInput(today)}" style="
+                                width: 100%;
+                                padding: 12px;
+                                border: 2px solid #e0e0e0;
+                                border-radius: 8px;
+                                font-size: 15px;
+                                box-sizing: border-box;
+                                transition: border-color 0.2s;
+                            ">
+                        </div>
+
+                        <div style="margin-bottom: 20px;">
+                            <label style="display: block; margin-bottom: 8px; color: #666; font-size: 13px;">
+                                Raccourcis :
+                            </label>
+                            <div style="display: flex; gap: 8px; flex-wrap: wrap;">
+                                <button class="ltoa-quick-date" data-date="${formatDate(today)}" style="
+                                    flex: 1;
+                                    padding: 10px;
+                                    border: 2px solid #c62828;
+                                    background: #fff;
+                                    border-radius: 6px;
+                                    cursor: pointer;
+                                    font-size: 13px;
+                                    color: #c62828;
+                                    font-weight: 500;
+                                    transition: all 0.2s;
+                                ">
+                                    📆 Aujourd'hui<br>
+                                    <small style="color: #888;">${formatDate(today)}</small>
+                                </button>
+                                <button class="ltoa-quick-date" data-date="${formatDate(yesterday)}" style="
+                                    flex: 1;
+                                    padding: 10px;
+                                    border: 2px solid #1976d2;
+                                    background: #fff;
+                                    border-radius: 6px;
+                                    cursor: pointer;
+                                    font-size: 13px;
+                                    color: #1976d2;
+                                    font-weight: 500;
+                                    transition: all 0.2s;
+                                ">
+                                    ⏪ Hier<br>
+                                    <small style="color: #888;">${formatDate(yesterday)}</small>
+                                </button>
+                                <button class="ltoa-quick-date" data-date="${formatDate(twoDaysAgo)}" style="
+                                    flex: 1;
+                                    padding: 10px;
+                                    border: 2px solid #7b1fa2;
+                                    background: #fff;
+                                    border-radius: 6px;
+                                    cursor: pointer;
+                                    font-size: 13px;
+                                    color: #7b1fa2;
+                                    font-weight: 500;
+                                    transition: all 0.2s;
+                                ">
+                                    ⏪⏪ Avant-hier<br>
+                                    <small style="color: #888;">${formatDate(twoDaysAgo)}</small>
+                                </button>
+                            </div>
+                        </div>
+
+                        <div style="margin-bottom: 20px;">
+                            <label for="ltoa-report-notes" style="display:block;margin-bottom:8px;color:#666;font-size:13px;">
+                                Notes ou précisions complémentaires (facultatif) :
+                            </label>
+                            <textarea id="ltoa-report-notes" rows="4" placeholder="Ex. rendez-vous extérieur, travail de fond, incident technique, précision sur un dossier…" style="
+                                width:100%;padding:12px;border:2px solid #e0e0e0;border-radius:8px;
+                                font-size:14px;box-sizing:border-box;resize:vertical;font-family:inherit;
+                            ">${Utils.escapeHtml(REPORT_NOTES)}</textarea>
+                        </div>
+
+                        <div style="display: flex; gap: 10px; margin-top: 25px;">
+                            <button id="ltoa-date-cancel" style="
+                                flex: 1;
+                                padding: 12px;
+                                border: 2px solid #ccc;
+                                background: #fff;
+                                border-radius: 8px;
+                                cursor: pointer;
+                                font-size: 14px;
+                                color: #666;
+                                transition: all 0.2s;
+                            ">Annuler</button>
+                            <button id="ltoa-date-confirm" style="
+                                flex: 1;
+                                padding: 12px;
+                                border: none;
+                                background: linear-gradient(135deg, #c62828, #b71c1c);
+                                border-radius: 8px;
+                                cursor: pointer;
+                                font-size: 14px;
+                                color: white;
+                                font-weight: 500;
+                                transition: all 0.2s;
+                            ">📊 Générer le rapport</button>
+                        </div>
+                    </div>
+                </div>
+            `;
+
+            document.body.appendChild(modal);
+
+            // Focus sur l'input date
+            const dateInput = document.getElementById('ltoa-date-input');
+            dateInput.focus();
+
+            // Styles hover pour les boutons
+            const styleHover = document.createElement('style');
+            styleHover.textContent = `
+                .ltoa-quick-date:hover {
+                    transform: translateY(-2px);
+                    box-shadow: 0 4px 12px rgba(0,0,0,0.15);
+                }
+                #ltoa-date-input:focus {
+                    border-color: #c62828;
+                    outline: none;
+                }
+                #ltoa-date-cancel:hover {
+                    background: #f5f5f5;
+                }
+                #ltoa-date-confirm:hover {
+                    transform: translateY(-1px);
+                    box-shadow: 0 4px 12px rgba(198, 40, 40, 0.4);
+                }
+            `;
+            modal.appendChild(styleHover);
+
+            // Événements boutons rapides
+            modal.querySelectorAll('.ltoa-quick-date').forEach(btn => {
+                btn.addEventListener('click', () => {
+                    const date = btn.getAttribute('data-date');
+                    // Convertir en format input (YYYY-MM-DD)
+                    const parts = date.split('/');
+                    dateInput.value = `${parts[2]}-${parts[1]}-${parts[0]}`;
+                    // Effet visuel
+                    modal.querySelectorAll('.ltoa-quick-date').forEach(b => {
+                        b.style.background = '#fff';
+                        b.style.fontWeight = '500';
+                    });
+                    btn.style.background = btn.style.borderColor;
+                    btn.style.color = '#fff';
+                });
+            });
+
+            // Annuler
+            document.getElementById('ltoa-date-cancel').addEventListener('click', () => {
+                modal.remove();
+                resolve(null);
+            });
+
+            // Confirmer
+            document.getElementById('ltoa-date-confirm').addEventListener('click', () => {
+                const inputValue = dateInput.value; // Format YYYY-MM-DD
+                if (inputValue) {
+                    REPORT_NOTES = document.getElementById('ltoa-report-notes')?.value.trim() || '';
+                    const parts = inputValue.split('-');
+                    const formattedDate = `${parts[2]}/${parts[1]}/${parts[0]}`; // DD/MM/YYYY
+                    modal.remove();
+                    resolve(formattedDate);
+                }
+            });
+
+            // Fermer en cliquant en dehors
+            modal.querySelector(':first-child').addEventListener('click', (e) => {
+                if (e.target === e.currentTarget) {
+                    modal.remove();
+                    resolve(null);
+                }
+            });
+
+            // Touche Entrée pour confirmer, Echap pour annuler
+            modal.addEventListener('keydown', (e) => {
+                if (e.key === 'Enter') {
+                    document.getElementById('ltoa-date-confirm').click();
+                } else if (e.key === 'Escape') {
+                    modal.remove();
+                    resolve(null);
+                }
+            });
+        });
+    }
+
+    async function handleReportClick() {
         const existingModal = document.getElementById('ltoa-report-modal');
 
         if (existingModal) {
@@ -3919,13 +6279,25 @@
                 if (action) {
                     existingModal.remove();
                     reportGenerated = false;
-                    generateReport();
+                    // Afficher le sélecteur de date
+                    const selectedDate = await showDatePicker();
+                    if (selectedDate) {
+                        SELECTED_REPORT_DATE = selectedDate;
+                        Utils.log('Date sélectionnée pour le rapport:', SELECTED_REPORT_DATE);
+                        generateReport();
+                    }
                 } else {
                     existingModal.style.display = 'none';
                 }
             }
         } else {
-            generateReport();
+            // Afficher le sélecteur de date
+            const selectedDate = await showDatePicker();
+            if (selectedDate) {
+                SELECTED_REPORT_DATE = selectedDate;
+                Utils.log('Date sélectionnée pour le rapport:', SELECTED_REPORT_DATE);
+                generateReport();
+            }
         }
     }
 
