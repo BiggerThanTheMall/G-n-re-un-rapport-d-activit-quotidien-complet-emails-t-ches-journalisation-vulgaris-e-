@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         LTOA Modulr - Rapport Quotidien
 // @namespace    https://github.com/BiggerThanTheMall/tampermonkey-ltoa
-// @version      5.1.2
+// @version      5.2.0
 // @description  Génération automatique du rapport d’activité quotidien dans Modulr
 // @author       LTOA Assurances
 // @match        https://courtage.modulr.fr/*
@@ -1749,6 +1749,140 @@
         aircallWindow: null,
         lastStatus: { state: 'not_started', source: null, message: '' },
 
+        credentials() {
+            return {
+                id: GM_getValue('ltoa_aircall_api_id', ''),
+                token: GM_getValue('ltoa_aircall_api_token', '')
+            };
+        },
+
+        request(url) {
+            const credentials = this.credentials();
+            return new Promise((resolve, reject) => {
+                GM_xmlhttpRequest({
+                    method: 'GET',
+                    url,
+                    headers: {
+                        Authorization: `Basic ${btoa(`${credentials.id}:${credentials.token}`)}`,
+                        Accept: 'application/json'
+                    },
+                    timeout: 30000,
+                    onload: response => {
+                        let body = null;
+                        try { body = JSON.parse(response.responseText || '{}'); } catch (_) {}
+                        if (response.status >= 200 && response.status < 300 && body) resolve(body);
+                        else reject(new Error(body?.troubleshoot || body?.error || `Aircall HTTP ${response.status}`));
+                    },
+                    ontimeout: () => reject(new Error('Délai API Aircall dépassé')),
+                    onerror: () => reject(new Error('Connexion API Aircall impossible'))
+                });
+            });
+        },
+
+        normalizeName(value) {
+            return String(value || '').normalize('NFD').replace(/[\u0300-\u036f]/g, '')
+                .toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
+        },
+
+        async findUserId(userName) {
+            const aliases = {
+                'Doryan KALAH': 'Doryan Kalah', 'Eddy KALAH': 'Eddy Kalah',
+                'Ghais Kalah': 'Ghais Kalah', 'GHAIS KALAH': 'Ghais Kalah',
+                'Jake CASIMIR': 'Jake CASIMIR', 'Louli VULLIOD-PIN': 'Louli VULLIOD',
+                'Nadia KALAH': 'Nadia Kalah', 'Youness OUACHBAB': 'Youness OUACHBAB',
+                'Sheana KRIEF': 'Sheana KRIEF'
+            };
+            const wanted = this.normalizeName(aliases[userName] || userName);
+            let url = 'https://api.aircall.io/v1/users?per_page=50&page=1';
+            while (url) {
+                const payload = await this.request(url);
+                const user = (payload.users || []).find(item => this.normalizeName(item.name) === wanted);
+                if (user) return user.id;
+                url = payload.meta?.next_page_link || null;
+            }
+            throw new Error(`Collaborateur Aircall introuvable : ${userName}`);
+        },
+
+        dateRange(dateStr) {
+            const [day, month, year] = String(dateStr).split('/').map(Number);
+            if (!day || !month || !year) throw new Error('Date Aircall invalide');
+            return {
+                from: Math.floor(new Date(year, month - 1, day, 0, 0, 0).getTime() / 1000),
+                to: Math.floor(new Date(year, month - 1, day + 1, 0, 0, 0).getTime() / 1000) - 1
+            };
+        },
+
+        async insight(callId, endpoint) {
+            await Utils.delay(650);
+            try {
+                return await this.request(`https://api.aircall.io/v1/calls/${callId}/${endpoint}`);
+            } catch (error) {
+                Utils.log(`Aircall ${endpoint} indisponible pour ${callId}: ${error.message}`);
+                return null;
+            }
+        },
+
+        async collectDirect(connectedUser, reportDate, updateLoader) {
+            const userId = await this.findUserId(connectedUser);
+            const range = this.dateRange(reportDate);
+            let url = `https://api.aircall.io/v1/calls/search?user_id=${encodeURIComponent(userId)}` +
+                `&from=${range.from}&to=${range.to}&order=asc&per_page=50&fetch_contact=true&page=1`;
+            const calls = [];
+            const seen = new Set();
+            let page = 0;
+            while (url) {
+                page++;
+                updateLoader(`API Aircall directe : page ${page}...`);
+                const payload = await this.request(url);
+                for (const call of payload.calls || []) {
+                    if (seen.has(call.id)) continue;
+                    seen.add(call.id);
+                    const contact = call.contact?.first_name || call.contact?.last_name
+                        ? [call.contact.first_name, call.contact.last_name].filter(Boolean).join(' ')
+                        : (call.contact?.name || call.raw_digits || 'Inconnu');
+                    calls.push({
+                        id: call.id,
+                        type: call.direction === 'inbound' ? 'entrant' : 'sortant',
+                        user: call.user?.name || connectedUser,
+                        contact,
+                        phone: call.raw_digits || '',
+                        durationSeconds: Number(call.duration) || 0,
+                        duration: `${Math.floor((Number(call.duration) || 0) / 60)}m ${(Number(call.duration) || 0) % 60}s`,
+                        time: call.started_at ? new Date(call.started_at * 1000).toLocaleTimeString('fr-FR', {hour:'2-digit', minute:'2-digit'}) : '',
+                        answered: Boolean(call.answered_at),
+                        missedReason: call.missed_call_reason || null,
+                        tags: (call.tags || []).map(tag => tag.name).filter(Boolean),
+                        summary: (call.comments || []).map(item => item.content).filter(Boolean).join(' — ') || null,
+                        source: 'api'
+                    });
+                }
+                url = payload.meta?.next_page_link || null;
+                if (page > 250) throw new Error('Pagination Aircall anormalement longue');
+            }
+
+            const answered = calls.filter(call => call.answered);
+            for (let index = 0; index < answered.length; index++) {
+                const call = answered[index];
+                updateLoader(`Analyses Aircall ${index + 1}/${answered.length}...`);
+                const summaryPayload = await this.insight(call.id, 'summary');
+                const sentimentPayload = await this.insight(call.id, 'sentiments');
+                const topicsPayload = await this.insight(call.id, 'topics');
+                const actionsPayload = await this.insight(call.id, 'action_items');
+                const transcriptPayload = await this.insight(call.id, 'transcription');
+                const sentiment = sentimentPayload?.sentiment?.participants?.find(p => p.type === 'external')?.value
+                    || sentimentPayload?.sentiment?.participants?.[0]?.value || null;
+                const moodMap = { POSITIVE: 'Positif', NEGATIVE: 'Négatif', NEUTRAL: 'Neutre' };
+                call.summary = summaryPayload?.summary?.content || call.summary;
+                call.mood = moodMap[String(sentiment || '').toUpperCase()] || sentiment;
+                call.topics = Array.isArray(topicsPayload?.topic?.content) ? topicsPayload.topic.content : [];
+                call.actionItems = (actionsPayload?.action_items || []).map(item => typeof item === 'string' ? item : item?.content).filter(Boolean);
+                const utterances = transcriptPayload?.transcription?.content?.utterances || [];
+                call.transcript = utterances.map(item => `${item.participant_type === 'internal' ? 'Collaborateur' : 'Interlocuteur'} : ${item.text || ''}`).join('\n');
+                call.transcriptLanguage = transcriptPayload?.transcription?.content?.language || null;
+            }
+            return calls;
+        },
+
         async collect(connectedUser, updateLoader) {
             if (!CONFIG.AIRCALL_ENABLED) {
                 Utils.log('Aircall désactivé dans la config');
@@ -1758,6 +1892,22 @@
             Utils.log('=== COLLECTE APPELS AIRCALL ===');
             Utils.log('Utilisateur:', connectedUser);
             const reportDate = Utils.getTodayDate();
+
+            const credentials = this.credentials();
+            if (credentials.id && credentials.token) {
+                try {
+                    updateLoader('Connexion directe à l’API Aircall...');
+                    const calls = await this.collectDirect(connectedUser, reportDate, updateLoader);
+                    this.lastStatus = {
+                        state: 'complete', source: 'api',
+                        message: `API Aircall directe : ${calls.length} appel${calls.length > 1 ? 's' : ''} trouvé${calls.length > 1 ? 's' : ''}`
+                    };
+                    return calls;
+                } catch (error) {
+                    this.lastStatus = { state: 'error', source: 'api', message: `Erreur API Aircall : ${error.message}` };
+                    throw error;
+                }
+            }
 
             return new Promise((resolve) => {
                 updateLoader('Ouverture de Aircall...');
