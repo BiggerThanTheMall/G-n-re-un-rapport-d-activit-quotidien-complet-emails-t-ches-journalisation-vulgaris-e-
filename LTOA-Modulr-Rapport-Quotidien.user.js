@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         LTOA Modulr - Rapport Quotidien
 // @namespace    https://github.com/BiggerThanTheMall/tampermonkey-ltoa
-// @version      5.2.0
+// @version      5.2.1
 // @description  Génération automatique du rapport d’activité quotidien dans Modulr
 // @author       LTOA Assurances
 // @match        https://courtage.modulr.fr/*
@@ -3239,10 +3239,10 @@
                             </div>
                         </div>
 
-                        <div style="margin:-10px 0 25px;padding:12px 16px;border-radius:8px;background:${aircallStatus?.state === 'complete' ? '#e8f5e9' : '#fff3e0'};color:${aircallStatus?.state === 'complete' ? '#1b5e20' : '#e65100'};font-size:12px;">
-                            📞 ${Utils.escapeHtml(aircallStatus?.message || 'Collecte Aircall non vérifiée')}
-                            ${(aircallCalls || []).length ? ` — ${aircallAnswered} répondu(s), ${formatDuration(aircallTalkSeconds)} de durée cumulée` : ''}
-                        </div>
+                        ${aircallStatus?.state === 'error' ? `
+                        <div style="margin:-10px 0 25px;padding:12px 16px;border-radius:8px;background:#ffebee;color:#b71c1c;font-size:12px;">
+                            ⚠️ ${Utils.escapeHtml(aircallStatus.message || 'Échec de la collecte Aircall')}
+                        </div>` : ''}
 
                         <!-- Alerte emails en attente -->
                         ${(pendingEmailsCount || 0) > 0 ? `
@@ -4983,10 +4983,10 @@
             <p><strong>${Utils.escapeHtml(user)}</strong> - ${date}</p>
         </div>
 
-        <div style="margin:0 25px 20px;padding:12px 16px;border-radius:8px;background:${aircallStatus?.state === 'complete' ? '#e8f5e9' : '#fff3e0'};color:${aircallStatus?.state === 'complete' ? '#1b5e20' : '#e65100'};font-size:12px;">
-            📞 ${Utils.escapeHtml(aircallStatus?.message || 'Collecte Aircall non vérifiée')}
-            ${(aircallCalls || []).length ? ` — ${aircallAnswered} répondu(s), ${aircallDurationText} de durée cumulée` : ''}
-        </div>
+        ${aircallStatus?.state === 'error' ? `
+        <div style="margin:0 25px 20px;padding:12px 16px;border-radius:8px;background:#ffebee;color:#b71c1c;font-size:12px;">
+            ⚠️ ${Utils.escapeHtml(aircallStatus.message || 'Échec de la collecte Aircall')}
+        </div>` : ''}
 
         <!-- Alerte emails en attente -->
         ${(pendingEmailsCount || 0) > 0 ? `
@@ -6307,6 +6307,14 @@
                             ">${Utils.escapeHtml(REPORT_NOTES)}</textarea>
                         </div>
 
+                        <div style="margin-bottom:20px;padding:12px 14px;background:#f5f7fa;border:1px solid #e0e0e0;border-radius:8px;display:flex;align-items:center;justify-content:space-between;gap:15px;">
+                            <div>
+                                <div style="font-size:13px;font-weight:600;color:#333;">Connexion Aircall</div>
+                                <div id="ltoa-aircall-config-status" style="font-size:11px;color:#777;margin-top:3px;">${GM_getValue('ltoa_aircall_api_id', '') && GM_getValue('ltoa_aircall_api_token', '') ? 'API configurée sur cet ordinateur' : 'API non configurée'}</div>
+                            </div>
+                            <button type="button" id="ltoa-configure-aircall" style="padding:9px 12px;border:1px solid #1976d2;background:white;color:#1976d2;border-radius:6px;cursor:pointer;font-size:12px;font-weight:600;white-space:nowrap;">⚙ Configurer</button>
+                        </div>
+
                         <div style="display: flex; gap: 10px; margin-top: 25px;">
                             <button id="ltoa-date-cancel" style="
                                 flex: 1;
@@ -6384,6 +6392,16 @@
             document.getElementById('ltoa-date-cancel').addEventListener('click', () => {
                 modal.remove();
                 resolve(null);
+            });
+
+            document.getElementById('ltoa-configure-aircall').addEventListener('click', (event) => {
+                event.preventDefault();
+                event.stopPropagation();
+                configureAircallApi();
+                const status = document.getElementById('ltoa-aircall-config-status');
+                if (status && GM_getValue('ltoa_aircall_api_id', '') && GM_getValue('ltoa_aircall_api_token', '')) {
+                    status.textContent = 'API configurée sur cet ordinateur';
+                }
             });
 
             // Confirmer
@@ -6517,30 +6535,6 @@
         Utils.log('Bouton rapport V4 ajouté avec succès (style Modulr) !');
     }
 
-    function addAircallConfigButton() {
-        if (!window.location.href.includes('courtage.modulr.fr')) return;
-        if (document.getElementById('ltoa-aircall-config-btn')) return;
-
-        const button = document.createElement('a');
-        button.id = 'ltoa-aircall-config-btn';
-        button.href = '#';
-        button.title = 'Configurer l’API Aircall';
-        button.style.cssText = 'cursor:pointer;background:#1565c0!important;color:white!important;padding:5px 9px;border-radius:3px;margin-left:6px;text-decoration:none;font-size:12px;font-weight:600;';
-        button.textContent = '⚙ Aircall';
-        button.addEventListener('click', (event) => {
-            event.preventDefault();
-            configureAircallApi();
-        });
-
-        const headerNavLeft = document.querySelector('#main-header-nav .content .left');
-        if (headerNavLeft) {
-            headerNavLeft.appendChild(button);
-        } else {
-            button.style.cssText += 'position:fixed;right:18px;bottom:18px;z-index:2147483647;';
-            document.body.appendChild(button);
-        }
-    }
-
     // ============================================
     // INITIALISATION
     // ============================================
@@ -6551,20 +6545,15 @@
         if (document.readyState === 'loading') {
             document.addEventListener('DOMContentLoaded', () => {
                 setTimeout(addReportButton, 1000);
-                setTimeout(addAircallConfigButton, 1000);
             });
         } else {
             setTimeout(addReportButton, 1000);
-            setTimeout(addAircallConfigButton, 1000);
         }
 
         // Observer pour ré-ajouter le bouton si supprimé
         const observer = new MutationObserver(() => {
             if (!document.getElementById('ltoa-daily-report-v4-btn')) {
                 addReportButton();
-            }
-            if (!document.getElementById('ltoa-aircall-config-btn')) {
-                addAircallConfigButton();
             }
         });
 
