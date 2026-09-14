@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         LTOA Modulr - Rapport Quotidien
 // @namespace    https://github.com/BiggerThanTheMall/tampermonkey-ltoa
-// @version      5.1.1
+// @version      5.1.2
 // @description  Génération automatique du rapport d’activité quotidien dans Modulr
 // @author       LTOA Assurances
 // @match        https://courtage.modulr.fr/*
@@ -6367,6 +6367,30 @@
         Utils.log('Bouton rapport V4 ajouté avec succès (style Modulr) !');
     }
 
+    function addAircallConfigButton() {
+        if (!window.location.href.includes('courtage.modulr.fr')) return;
+        if (document.getElementById('ltoa-aircall-config-btn')) return;
+
+        const button = document.createElement('a');
+        button.id = 'ltoa-aircall-config-btn';
+        button.href = '#';
+        button.title = 'Configurer l’API Aircall';
+        button.style.cssText = 'cursor:pointer;background:#1565c0!important;color:white!important;padding:5px 9px;border-radius:3px;margin-left:6px;text-decoration:none;font-size:12px;font-weight:600;';
+        button.textContent = '⚙ Aircall';
+        button.addEventListener('click', (event) => {
+            event.preventDefault();
+            configureAircallApi();
+        });
+
+        const headerNavLeft = document.querySelector('#main-header-nav .content .left');
+        if (headerNavLeft) {
+            headerNavLeft.appendChild(button);
+        } else {
+            button.style.cssText += 'position:fixed;right:18px;bottom:18px;z-index:2147483647;';
+            document.body.appendChild(button);
+        }
+    }
+
     // ============================================
     // INITIALISATION
     // ============================================
@@ -6377,15 +6401,20 @@
         if (document.readyState === 'loading') {
             document.addEventListener('DOMContentLoaded', () => {
                 setTimeout(addReportButton, 1000);
+                setTimeout(addAircallConfigButton, 1000);
             });
         } else {
             setTimeout(addReportButton, 1000);
+            setTimeout(addAircallConfigButton, 1000);
         }
 
         // Observer pour ré-ajouter le bouton si supprimé
         const observer = new MutationObserver(() => {
             if (!document.getElementById('ltoa-daily-report-v4-btn')) {
                 addReportButton();
+            }
+            if (!document.getElementById('ltoa-aircall-config-btn')) {
+                addAircallConfigButton();
             }
         });
 
