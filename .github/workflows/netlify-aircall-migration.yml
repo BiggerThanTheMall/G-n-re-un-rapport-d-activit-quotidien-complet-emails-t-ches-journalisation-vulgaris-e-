@@ -29,7 +29,7 @@ jobs:
         run: |
           git config user.name 'LTOA migration bot'
           git config user.email 'actions@users.noreply.github.com'
-          git rm scripts/migrate_aircall_netlify.py scripts/finalize_aircall_migration.py .github/workflows/netlify-aircall-migration.yml
+          git rm -f scripts/migrate_aircall_netlify.py scripts/finalize_aircall_migration.py .github/workflows/netlify-aircall-migration.yml
           git add LTOA-Modulr-Rapport-Quotidien.user.js
           git commit -m 'Route Rapport Quotidien Aircall through Netlify'
           git push origin HEAD:main
