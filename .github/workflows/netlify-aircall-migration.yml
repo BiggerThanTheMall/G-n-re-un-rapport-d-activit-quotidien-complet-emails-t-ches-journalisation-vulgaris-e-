@@ -5,6 +5,7 @@ on:
       - main
     paths:
       - scripts/migrate_aircall_netlify.py
+      - scripts/finalize_aircall_migration.py
       - .github/workflows/netlify-aircall-migration.yml
 permissions:
   contents: write
@@ -15,60 +16,20 @@ jobs:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
-      - name: Apply Aircall access migration only
-        shell: bash
-        run: |
-          # Generic GM storage permissions may be used elsewhere in the report.
-          # For this migration we only forbid Aircall-specific browser secrets/direct API access.
-          sed -i "s/^forbidden = .*/forbidden = ['api.aircall.io', 'Authorization: `Basic']/" scripts/migrate_aircall_netlify.py
-          python3 scripts/migrate_aircall_netlify.py
-
-          python3 - <<'PY'
-          from pathlib import Path
-          p = Path('LTOA-Modulr-Rapport-Quotidien.user.js')
-          s = p.read_text(encoding='utf-8')
-
-          # Replace only the old Aircall credential/configuration card in the date picker.
-          anchor = s.index('id="ltoa-aircall-config-status"')
-          start = s.rfind('                        <div style="margin-bottom:20px;', 0, anchor)
-          end = s.index('                        <div style="display: flex; gap: 10px;', anchor)
-          static = '''                        <div style="margin-bottom:20px;padding:12px 14px;background:#f5f7fa;border:1px solid #e0e0e0;border-radius:8px;">
-                            <div style="font-size:13px;font-weight:600;color:#333;">Connexion Aircall</div>
-                            <div style="font-size:11px;color:#777;margin-top:3px;">Sécurisée via Netlify · aucune configuration nécessaire</div>
-                        </div>
-
-'''
-          s = s[:start] + static + s[end:]
-
-          # Remove only the listener that opened the former Aircall API configuration popup.
-          anchor = s.index("document.getElementById('ltoa-configure-aircall').addEventListener")
-          start = s.rfind('            ', 0, anchor)
-          end = s.index('            // Confirmer', anchor)
-          s = s[:start] + s[end:]
-
-          forbidden = [
-              'ltoa_aircall_api_id', 'ltoa_aircall_api_token', 'api.aircall.io',
-              'configureAircallApi', 'Authorization: `Basic'
-          ]
-          left = [value for value in forbidden if value in s]
-          if left:
-              raise SystemExit(f'Aircall browser-secret references remain: {left}')
-          p.write_text(s, encoding='utf-8')
-          PY
+      - name: Apply Aircall migration
+        run: python3 scripts/finalize_aircall_migration.py
       - name: Syntax check
         run: node --check LTOA-Modulr-Rapport-Quotidien.user.js
-      - name: Security and scope assertions
-        shell: bash
+      - name: Security assertions
         run: |
           ! grep -Eq 'ltoa_aircall_api_id|ltoa_aircall_api_token|api\.aircall\.io|Authorization:.*Basic|configureAircallApi' LTOA-Modulr-Rapport-Quotidien.user.js
           grep -q 'https://aircallmodulr.netlify.app' LTOA-Modulr-Rapport-Quotidien.user.js
           grep -q '// @version      5.3.0' LTOA-Modulr-Rapport-Quotidien.user.js
       - name: Commit tested migration and cleanup helpers
-        shell: bash
         run: |
           git config user.name 'LTOA migration bot'
           git config user.email 'actions@users.noreply.github.com'
-          git rm scripts/migrate_aircall_netlify.py .github/workflows/netlify-aircall-migration.yml
+          git rm scripts/migrate_aircall_netlify.py scripts/finalize_aircall_migration.py .github/workflows/netlify-aircall-migration.yml
           git add LTOA-Modulr-Rapport-Quotidien.user.js
           git commit -m 'Route Rapport Quotidien Aircall through Netlify'
           git push origin HEAD:main
