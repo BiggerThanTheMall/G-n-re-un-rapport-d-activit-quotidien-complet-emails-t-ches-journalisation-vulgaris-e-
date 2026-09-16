@@ -1,11 +1,10 @@
 // ==UserScript==
 // @name         LTOA Modulr - Rapport Quotidien
 // @namespace    https://github.com/BiggerThanTheMall/tampermonkey-ltoa
-// @version      5.2.1
+// @version      5.3.0
 // @description  Génération automatique du rapport d’activité quotidien dans Modulr
 // @author       LTOA Assurances
 // @match        https://courtage.modulr.fr/*
-// @match        https://*.aircall.io/*
 // @exclude      https://courtage.modulr.fr/fr/intranet/edm/preview/document/*
 // @exclude      https://courtage.modulr.fr/fr/intranet/edm/display/Client/*
 // @exclude      https://courtage.modulr.fr/fr/scripts/sent_emails/sent_emails_frame.php?sent_email_id*
@@ -16,7 +15,6 @@
 // @grant        GM_setValue
 // @grant        GM_registerMenuCommand
 // @connect      courtage.modulr.fr
-// @connect      api.aircall.io
 //
 // @updateURL    https://raw.githubusercontent.com/BiggerThanTheMall/G-n-re-un-rapport-d-activit-quotidien-complet-emails-t-ches-journalisation-vulgaris-e-/main/LTOA-Modulr-Rapport-Quotidien.user.js
 // @downloadURL  https://raw.githubusercontent.com/BiggerThanTheMall/G-n-re-un-rapport-d-activit-quotidien-complet-emails-t-ches-journalisation-vulgaris-e-/main/LTOA-Modulr-Rapport-Quotidien.user.js
@@ -25,558 +23,7 @@
 (function() {
     'use strict';
 
-    const configureAircallApi = () => {
-        const currentId = GM_getValue('ltoa_aircall_api_id', '');
-        const id = prompt('API ID Aircall (laissée vide = conserver la valeur actuelle)', currentId);
-        if (id === null) return false;
-        const token = prompt('API Token Aircall (stocké uniquement dans Tampermonkey sur ce navigateur)', '');
-        if (token === null) return false;
-        if (id.trim()) GM_setValue('ltoa_aircall_api_id', id.trim());
-        if (token.trim()) GM_setValue('ltoa_aircall_api_token', token.trim());
-        alert('Configuration Aircall enregistrée localement.');
-        return true;
-    };
 
-    GM_registerMenuCommand('Configurer l’API Aircall pour les rapports', configureAircallApi);
-
-    // Le même userscript assure les deux rôles. Lorsque Modulr ouvre Aircall
-    // avec les paramètres ltoa_*, cette branche collecte puis renvoie les appels.
-    if (window.location.hostname.endsWith('.aircall.io')) {
-        (function() {
-            'use strict';
-
-            const CONFIG = {
-                DEBUG: true,
-                DELAY_BETWEEN_ACTIONS: 1000,
-                DELAY_LOAD_MORE: 2000,
-                DELAY_PREVIEW: 1500,
-                MAX_LOAD_MORE_CLICKS: 200,
-                AIRCALL_API_ROOT: 'https://api.aircall.io/v1',
-                API_PER_PAGE: 50,
-            };
-
-            // Mapping Modulr -> Aircall
-            const USER_MAP_AIRCALL = {
-                'Doryan KALAH': 'Doryan Kalah',
-                'Eddy KALAH': 'Eddy Kalah',
-                'Ghais Kalah': 'Ghais Kalah',
-                'GHAIS KALAH': 'Ghais Kalah',
-                'Jake CASIMIR': 'Jake CASIMIR',
-                'Louli VULLIOD-PIN': 'Louli VULLIOD',
-                'Nadia KALAH': 'Nadia Kalah',
-                'Youness OUACHBAB': 'Youness OUACHBAB',
-                'Sheana KRIEF': 'Sheana KRIEF',
-            };
-
-            const Utils = {
-                log: (msg, data = null) => {
-                    if (CONFIG.DEBUG) console.log(`[LTOA-Aircall] ${msg}`, data || '');
-                },
-                delay: (ms) => new Promise(resolve => setTimeout(resolve, ms)),
-
-                formatDateForAircall: (dateStr) => {
-                    const parts = dateStr.split('/');
-                    const date = new Date(parseInt(parts[2]), parseInt(parts[1]) - 1, parseInt(parts[0]));
-                    const months = ['January', 'February', 'March', 'April', 'May', 'June',
-                                   'July', 'August', 'September', 'October', 'November', 'December'];
-                    const day = date.getDate();
-                    const suffix = (day === 1 || day === 21 || day === 31) ? 'st' :
-                                  (day === 2 || day === 22) ? 'nd' :
-                                  (day === 3 || day === 23) ? 'rd' : 'th';
-                    return `${months[date.getMonth()]} ${day}${suffix}, ${date.getFullYear()}`;
-                },
-
-                isLoggedIn: () => {
-                    return !window.location.pathname.includes('/login') &&
-                           !window.location.pathname.includes('/auth') &&
-                           !document.querySelector('input[type="password"]');
-                },
-
-                getLtoaParams: () => {
-                    const params = new URLSearchParams(window.location.search);
-                    const user = params.get('ltoa_user');
-                    const date = params.get('ltoa_date');
-                    const autoclose = params.get('ltoa_autoclose') === 'true';
-                    if (user && date) return { user, date, autoclose };
-                    return null;
-                },
-
-                sendToParent: (data) => {
-                    if (window.opener) {
-                        try { window.opener.postMessage(data, '*'); return true; } catch (e) {}
-                    }
-                    return false;
-                },
-
-                normalizeName: (value) => String(value || '')
-                    .normalize('NFD').replace(/[\u0300-\u036f]/g, '')
-                    .toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim(),
-
-                parseFrenchDateRange: (dateStr) => {
-                    const [day, month, year] = String(dateStr).split('/').map(Number);
-                    if (!day || !month || !year) throw new Error('Date Aircall invalide');
-                    // Les rapports LTOA sont en heure française. Midi évite les ambiguïtés DST,
-                    // puis on reconstruit les bornes locales via Intl.
-                    const localStart = new Date(year, month - 1, day, 0, 0, 0);
-                    const localEnd = new Date(year, month - 1, day + 1, 0, 0, 0);
-                    return {
-                        from: Math.floor(localStart.getTime() / 1000),
-                        to: Math.floor(localEnd.getTime() / 1000) - 1
-                    };
-                },
-
-                secondsToText: (seconds) => {
-                    const total = Math.max(0, Number(seconds) || 0);
-                    const minutes = Math.floor(total / 60);
-                    const rest = total % 60;
-                    return minutes ? `${minutes}m ${rest}s` : `${rest}s`;
-                }
-            };
-
-            const AircallApi = {
-                credentials() {
-                    return {
-                        id: GM_getValue('ltoa_aircall_api_id', ''),
-                        token: GM_getValue('ltoa_aircall_api_token', '')
-                    };
-                },
-
-                configure: configureAircallApi,
-
-                request(url) {
-                    const credentials = this.credentials();
-                    if (!credentials.id || !credentials.token) {
-                        return Promise.reject(new Error('API Aircall non configurée'));
-                    }
-                    return new Promise((resolve, reject) => {
-                        GM_xmlhttpRequest({
-                            method: 'GET',
-                            url,
-                            headers: {
-                                Authorization: `Basic ${btoa(`${credentials.id}:${credentials.token}`)}`,
-                                Accept: 'application/json'
-                            },
-                            timeout: 30000,
-                            onload: response => {
-                                let body = null;
-                                try { body = JSON.parse(response.responseText || '{}'); } catch (_) {}
-                                if (response.status >= 200 && response.status < 300 && body) resolve(body);
-                                else reject(new Error(body?.troubleshoot || body?.error || `Aircall HTTP ${response.status}`));
-                            },
-                            ontimeout: () => reject(new Error('Délai API Aircall dépassé')),
-                            onerror: () => reject(new Error('Connexion API Aircall impossible'))
-                        });
-                    });
-                },
-
-                async findUserId(userName) {
-                    let url = `${CONFIG.AIRCALL_API_ROOT}/users?per_page=50&page=1`;
-                    const wanted = Utils.normalizeName(USER_MAP_AIRCALL[userName] || userName);
-                    while (url) {
-                        const payload = await this.request(url);
-                        const user = (payload.users || []).find(item => Utils.normalizeName(item.name) === wanted);
-                        if (user) return user.id;
-                        url = payload.meta?.next_page_link || null;
-                    }
-                    throw new Error(`Collaborateur Aircall introuvable : ${userName}`);
-                },
-
-                async insight(callId, endpoint) {
-                    // 650 ms entre les requêtes garde une marge sous la limite officielle
-                    // de 120 requêtes/minute. Une donnée Conversation Intelligence absente
-                    // ne doit jamais faire échouer l'ensemble du rapport.
-                    await Utils.delay(650);
-                    try {
-                        return await this.request(`${CONFIG.AIRCALL_API_ROOT}/calls/${callId}/${endpoint}`);
-                    } catch (error) {
-                        Utils.log(`Information ${endpoint} indisponible pour l'appel ${callId}: ${error.message}`);
-                        return null;
-                    }
-                },
-
-                async enrichCall(call, position, total, updateStatus) {
-                    if (!call.answered) return call;
-                    updateStatus(`Analyse Aircall ${position}/${total}...`, 60 + (position / Math.max(total, 1)) * 30);
-
-                    const summaryPayload = await this.insight(call.id, 'summary');
-                    const sentimentPayload = await this.insight(call.id, 'sentiments');
-                    const topicsPayload = await this.insight(call.id, 'topics');
-                    const actionsPayload = await this.insight(call.id, 'action_items');
-                    const transcriptPayload = await this.insight(call.id, 'transcription');
-
-                    const externalSentiment = sentimentPayload?.sentiment?.participants?.find(p => p.type === 'external')?.value
-                        || sentimentPayload?.sentiment?.participants?.[0]?.value || null;
-                    const moodMap = { POSITIVE: 'Positif', NEGATIVE: 'Négatif', NEUTRAL: 'Neutre' };
-                    const utterances = transcriptPayload?.transcription?.content?.utterances || [];
-
-                    call.summary = summaryPayload?.summary?.content || call.summary || null;
-                    call.mood = moodMap[String(externalSentiment || '').toUpperCase()] || externalSentiment || null;
-                    call.topics = Array.isArray(topicsPayload?.topic?.content) ? topicsPayload.topic.content : [];
-                    call.actionItems = (actionsPayload?.action_items || [])
-                        .map(item => typeof item === 'string' ? item : item?.content)
-                        .filter(Boolean);
-                    call.transcript = utterances.map(item => {
-                        const speaker = item.participant_type === 'internal' ? 'Collaborateur' :
-                            (item.participant_type === 'external' ? 'Interlocuteur' : 'Autre');
-                        return `${speaker} : ${item.text || ''}`;
-                    }).filter(line => !line.endsWith(': ')).join('\n');
-                    call.transcriptLanguage = transcriptPayload?.transcription?.content?.language || null;
-                    return call;
-                },
-
-                async collect(userName, dateStr, updateStatus) {
-                    const userId = await this.findUserId(userName);
-                    const range = Utils.parseFrenchDateRange(dateStr);
-                    let url = `${CONFIG.AIRCALL_API_ROOT}/calls/search?user_id=${encodeURIComponent(userId)}` +
-                        `&from=${range.from}&to=${range.to}&order=asc&per_page=${CONFIG.API_PER_PAGE}` +
-                        '&fetch_contact=true&page=1';
-                    const calls = [];
-                    const seenIds = new Set();
-                    let page = 0;
-
-                    while (url) {
-                        page++;
-                        updateStatus(`API Aircall : page ${page}...`, Math.min(90, 20 + page * 5));
-                        const payload = await this.request(url);
-                        for (const call of payload.calls || []) {
-                            if (seenIds.has(call.id)) continue;
-                            seenIds.add(call.id);
-                            const contact = call.contact?.first_name || call.contact?.last_name
-                                ? [call.contact.first_name, call.contact.last_name].filter(Boolean).join(' ')
-                                : (call.contact?.name || call.raw_digits || 'Inconnu');
-                            const comments = (call.comments || []).map(item => item.content).filter(Boolean);
-                            calls.push({
-                                id: call.id,
-                                type: call.direction === 'inbound' ? 'entrant' : 'sortant',
-                                user: call.user?.name || userName,
-                                contact,
-                                phone: call.raw_digits || '',
-                                durationSeconds: Number(call.duration) || 0,
-                                duration: Utils.secondsToText(call.duration),
-                                time: call.started_at ? new Date(call.started_at * 1000).toLocaleTimeString('fr-FR', {hour:'2-digit', minute:'2-digit'}) : '',
-                                answered: Boolean(call.answered_at),
-                                missedReason: call.missed_call_reason || null,
-                                tags: (call.tags || []).map(tag => tag.name).filter(Boolean),
-                                summary: comments.join(' — ') || null,
-                                source: 'api'
-                            });
-                        }
-                        url = payload.meta?.next_page_link || null;
-                        if (page > 250) throw new Error('Pagination Aircall anormalement longue');
-                    }
-
-                    const answeredCalls = calls.filter(call => call.answered);
-                    for (let index = 0; index < answeredCalls.length; index++) {
-                        await this.enrichCall(answeredCalls[index], index + 1, answeredCalls.length, updateStatus);
-                    }
-                    return calls;
-                }
-            };
-
-            const AircallCollector = {
-                createStatusIndicator() {
-                    const existing = document.getElementById('ltoa-status');
-                    if (existing) existing.remove();
-
-                    const div = document.createElement('div');
-                    div.id = 'ltoa-status';
-                    div.innerHTML = `
-                        <div style="position:fixed;top:10px;right:10px;z-index:999999;background:linear-gradient(135deg,#c62828,#8e0000);color:white;padding:15px 20px;border-radius:10px;box-shadow:0 4px 20px rgba(0,0,0,0.3);font-family:sans-serif;min-width:300px;">
-                            <div style="display:flex;align-items:center;margin-bottom:8px;">
-                                <span style="font-size:20px;margin-right:10px;">📞</span>
-                                <strong>LTOA Aircall</strong>
-                            </div>
-                            <div id="ltoa-user" style="font-size:12px;opacity:0.8;"></div>
-                            <div id="ltoa-date" style="font-size:12px;opacity:0.8;margin-bottom:8px;"></div>
-                            <div id="ltoa-msg" style="font-size:13px;">Démarrage...</div>
-                            <div style="margin-top:10px;height:4px;background:rgba(255,255,255,0.3);border-radius:2px;">
-                                <div id="ltoa-bar" style="width:0%;height:100%;background:white;transition:width 0.3s;"></div>
-                            </div>
-                        </div>
-                    `;
-                    document.body.appendChild(div);
-                },
-
-                updateStatus(msg, pct = null) {
-                    Utils.log(msg);
-                    const el = document.getElementById('ltoa-msg');
-                    const bar = document.getElementById('ltoa-bar');
-                    if (el) el.textContent = msg;
-                    if (bar && pct !== null) bar.style.width = pct + '%';
-                    Utils.sendToParent({ type: 'LTOA_AIRCALL_STATUS', message: msg });
-                },
-
-                async waitForPageLoad() {
-                    this.updateStatus('Chargement page...', 5);
-                    for (let i = 0; i < 30; i++) {
-                        await Utils.delay(500);
-                        if (document.querySelector('[data-test="all-filters-button"]')) return true;
-                    }
-                    return false;
-                },
-
-                // 1. Ouvrir filtres
-                async openFilters() {
-                    this.updateStatus('Ouverture filtres...', 10);
-                    const btn = document.querySelector('[data-test="all-filters-button"]');
-                    if (btn) {
-                        btn.click();
-                        await Utils.delay(1000);
-                        return true;
-                    }
-                    return false;
-                },
-
-                // 2. Sélectionner utilisateur
-                async selectUser(userName) {
-                    const aircallName = USER_MAP_AIRCALL[userName] || userName;
-                    this.updateStatus(`Sélection: ${aircallName}`, 20);
-
-                    // Clic sur bouton "Utilisateurs"
-                    const trigger = document.querySelector('[data-test="filter-summary-user-trigger"]');
-                    if (!trigger) {
-                        Utils.log('❌ Bouton Utilisateurs non trouvé');
-                        return false;
-                    }
-
-                    Utils.log('Clic sur Utilisateurs');
-                    trigger.click();
-                    await Utils.delay(1000);
-
-                    // Chercher dans la liste des menu-items
-                    const items = document.querySelectorAll('[data-test^="menu-item-"]');
-                    Utils.log(`${items.length} items trouvés`);
-
-                    for (const item of items) {
-                        const text = item.textContent.trim();
-                        Utils.log(`  Item: "${text.substring(0, 30)}..."`);
-
-                        // Vérifier si le nom est dedans
-                        if (text.toLowerCase().includes(aircallName.toLowerCase())) {
-                            Utils.log(`  ✓ TROUVÉ! Clic`);
-
-                            // Cliquer sur la checkbox
-                            const checkbox = item.querySelector('input[type="checkbox"]');
-                            if (checkbox) {
-                                checkbox.click();
-                                await Utils.delay(500);
-                                return true;
-                            }
-                        }
-                    }
-
-                    Utils.log('❌ Utilisateur non trouvé');
-                    return false;
-                },
-
-                // 3. Sélectionner date
-                async selectDate(dateStr) {
-                    const aircallDate = Utils.formatDateForAircall(dateStr);
-                    this.updateStatus(`Sélection date: ${dateStr}`, 35);
-
-                    // Clic sur bouton "Date"
-                    const trigger = document.querySelector('[data-test="date-select-input"]');
-                    if (!trigger) {
-                        Utils.log('❌ Bouton Date non trouvé');
-                        return false;
-                    }
-
-                    Utils.log('Clic sur Date');
-                    trigger.click();
-                    await Utils.delay(1000);
-
-                    // Clic 2x sur la date
-                    for (let i = 0; i < 2; i++) {
-                        const btns = document.querySelectorAll('button[title]');
-                        for (const btn of btns) {
-                            if (btn.title === aircallDate) {
-                                Utils.log(`Clic ${i+1}/2 sur ${btn.title}`);
-                                btn.click();
-                                await Utils.delay(500);
-                                break;
-                            }
-                        }
-                    }
-                    return true;
-                },
-
-                // 4. Valider
-                async clickSeeResults() {
-                    this.updateStatus('Validation filtres...', 50);
-                    const btn = document.querySelector('[data-test="see-results-button"]');
-                    if (btn) {
-                        btn.click();
-                        await Utils.delay(2000);
-                        return true;
-                    }
-                    return false;
-                },
-
-                // 5. Charger tout
-                async loadAllResults() {
-                    this.updateStatus('Chargement résultats...', 55);
-                    let clicks = 0;
-                    let previousCount = -1;
-                    let unchanged = 0;
-                    while (clicks < CONFIG.MAX_LOAD_MORE_CLICKS) {
-                        await Utils.delay(1000);
-                        const currentCount = document.querySelectorAll('tbody tr').length;
-                        unchanged = currentCount === previousCount ? unchanged + 1 : 0;
-                        previousCount = currentCount;
-                        const btn = document.querySelector('[data-test="loading-button"]');
-                        if (!btn || btn.disabled) break;
-                        btn.click();
-                        clicks++;
-                        this.updateStatus(`Chargement... (${clicks})`, 55 + clicks);
-                        await Utils.delay(2000);
-                        if (unchanged >= 3) break;
-                    }
-                },
-
-                // Résumé IA
-                async getSummary(row) {
-                    try {
-                        const btn = row.querySelector('[data-test="table-preview-button"]');
-                        if (!btn) return null;
-                        btn.click();
-                        await Utils.delay(CONFIG.DELAY_PREVIEW);
-                        const el = document.querySelector('[data-test="call-context-summary-text"]');
-                        const summary = el ? el.textContent.trim() : null;
-                        document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' }));
-                        await Utils.delay(300);
-                        return summary;
-                    } catch (e) { return null; }
-                },
-
-                // 6. Collecter
-                async collectCalls() {
-                    this.updateStatus('Collecte appels...', 65);
-                    const calls = [];
-                    const rows = document.querySelectorAll('tbody tr');
-                    Utils.log(`${rows.length} appels`);
-
-                    let i = 0;
-                    for (const row of rows) {
-                        i++;
-                        this.updateStatus(`Collecte ${i}/${rows.length}...`, 65 + (i/rows.length)*25);
-
-                        try {
-                            const cells = row.querySelectorAll('td');
-                            if (cells.length < 6) continue;
-
-                            const svg = cells[0].innerHTML || '';
-                            const type = svg.includes('M12.293') ? 'sortant' : (svg.includes('M16.942') ? 'entrant' : 'inconnu');
-                            const user = (cells[1].textContent || '').trim().split('\n')[0];
-                            const contact = (cells[3].textContent || '').trim().split('\n')[0] || 'Inconnu';
-                            const duration = (cells[4].textContent || '').trim() || '0s';
-                            const time = (cells[5].textContent || '').trim().split('\n')[0] || '';
-
-                            let mood = null;
-                            for (const c of cells) {
-                                const t = c.textContent || '';
-                                if (t.includes('Neutre')) { mood = 'Neutre'; break; }
-                                if (t.includes('Positif')) { mood = 'Positif'; break; }
-                                if (t.includes('Négatif')) { mood = 'Négatif'; break; }
-                            }
-
-                            const summary = await this.getSummary(row);
-                            calls.push({ type, user, contact, duration, time, mood, summary });
-                            Utils.log(`  ✓ ${type} | ${contact}`);
-                        } catch (e) {}
-                    }
-                    return calls;
-                },
-
-                async start(request) {
-                    this.createStatusIndicator();
-                    document.getElementById('ltoa-user').textContent = `👤 ${request.user}`;
-                    document.getElementById('ltoa-date').textContent = `📅 ${request.date}`;
-
-                Utils.log('=== AIRCALL intégré v3.1.0 ===');
-                    Utils.log('User:', request.user);
-                    Utils.log('Date:', request.date);
-
-                    try {
-                        // Voie fiable : API officielle et pagination complète.
-                        if (AircallApi.credentials().id && AircallApi.credentials().token) {
-                            const calls = await AircallApi.collect(request.user, request.date, (msg, pct) => this.updateStatus(msg, pct));
-                            Utils.sendToParent({
-                                type: 'LTOA_AIRCALL_RESPONSE', success: true, calls,
-                                user: request.user, date: request.date,
-                                collectionStatus: 'complete', collectionSource: 'api'
-                            });
-                            this.updateStatus(`✅ ${calls.length} appels via API`, 100);
-                            await Utils.delay(1200);
-                            if (request.autoclose) window.close();
-                            return;
-                        }
-
-                        this.updateStatus('API non configurée : collecte visuelle de secours', 2);
-
-                        // Connexion
-                        let wait = 0;
-                        while (!Utils.isLoggedIn() && wait < 60000) {
-                            this.updateStatus('Connexion...', 0);
-                            await Utils.delay(2000);
-                            wait += 2000;
-                        }
-                        if (!Utils.isLoggedIn()) throw new Error('Non connecté');
-
-                        await this.waitForPageLoad();
-                        await Utils.delay(1000);
-
-                        // Filtres
-                        await this.openFilters();
-                        await Utils.delay(1000);
-
-                        await this.selectUser(request.user);
-                        await Utils.delay(1000);
-
-                        await this.selectDate(request.date);
-                        await Utils.delay(1000);
-
-                        await this.clickSeeResults();
-                        await Utils.delay(1500);
-
-                        await this.loadAllResults();
-                        await Utils.delay(1000);
-
-                        const calls = await this.collectCalls();
-
-                        this.updateStatus('Envoi...', 95);
-                        Utils.sendToParent({
-                            type: 'LTOA_AIRCALL_RESPONSE',
-                            success: true,
-                            calls: calls,
-                            user: request.user,
-                            date: request.date,
-                            collectionStatus: 'partial',
-                            collectionSource: 'dashboard'
-                        });
-
-                        this.updateStatus(`✅ ${calls.length} appels !`, 100);
-
-                        await Utils.delay(2000);
-                        if (request.autoclose) window.close();
-
-                    } catch (e) {
-                        Utils.log('ERREUR:', e);
-                        this.updateStatus(`❌ ${e.message}`, 0);
-                        Utils.sendToParent({ type: 'LTOA_AIRCALL_RESPONSE', success: false, error: e.message });
-                    }
-                },
-
-                init() {
-                Utils.log('=== AIRCALL intégré v3.1.0 ===');
-                    const params = Utils.getLtoaParams();
-                    if (params) setTimeout(() => this.start(params), 2000);
-                }
-            };
-
-            AircallCollector.init();
-        })();
-        return;
-    }
     // ============================================
     // CONFIGURATION
     // ============================================
@@ -1744,37 +1191,27 @@
     // ============================================
     // COLLECTEUR D'APPELS AIRCALL
     // ============================================
-    // Communique avec le script Aircall via URL params et postMessage
+    // Accès Aircall sécurisé via Netlify : aucun secret dans Tampermonkey.
     const AircallCollector = {
-        aircallWindow: null,
         lastStatus: { state: 'not_started', source: null, message: '' },
+        API_ROOT: 'https://aircallmodulr.netlify.app',
 
-        credentials() {
-            return {
-                id: GM_getValue('ltoa_aircall_api_id', ''),
-                token: GM_getValue('ltoa_aircall_api_token', '')
-            };
-        },
-
-        request(url) {
-            const credentials = this.credentials();
+        request(path) {
             return new Promise((resolve, reject) => {
-                GM_xmlhttpRequest({
-                    method: 'GET',
-                    url,
-                    headers: {
-                        Authorization: `Basic ${btoa(`${credentials.id}:${credentials.token}`)}`,
-                        Accept: 'application/json'
-                    },
-                    timeout: 30000,
-                    onload: response => {
-                        let body = null;
-                        try { body = JSON.parse(response.responseText || '{}'); } catch (_) {}
-                        if (response.status >= 200 && response.status < 300 && body) resolve(body);
-                        else reject(new Error(body?.troubleshoot || body?.error || `Aircall HTTP ${response.status}`));
-                    },
-                    ontimeout: () => reject(new Error('Délai API Aircall dépassé')),
-                    onerror: () => reject(new Error('Connexion API Aircall impossible'))
+                const controller = new AbortController();
+                const timer = setTimeout(() => controller.abort(), 30000);
+                fetch(`${this.API_ROOT}${path}`, {
+                    method: 'GET', mode: 'cors', credentials: 'omit',
+                    headers: { Accept: 'application/json' }, signal: controller.signal
+                }).then(async response => {
+                    clearTimeout(timer);
+                    let body = null;
+                    try { body = await response.json(); } catch (_) {}
+                    if (response.ok && body) resolve(body);
+                    else reject(new Error(body?.error || `Aircall HTTP ${response.status}`));
+                }).catch(error => {
+                    clearTimeout(timer);
+                    reject(new Error(error?.name === 'AbortError' ? 'Délai API Aircall dépassé' : 'Connexion API Aircall impossible'));
                 });
             });
         },
@@ -1793,12 +1230,11 @@
                 'Sheana KRIEF': 'Sheana KRIEF'
             };
             const wanted = this.normalizeName(aliases[userName] || userName);
-            let url = 'https://api.aircall.io/v1/users?per_page=50&page=1';
-            while (url) {
-                const payload = await this.request(url);
+            for (let page = 1; page <= 250; page++) {
+                const payload = await this.request(`/api/report/users?per_page=50&page=${page}`);
                 const user = (payload.users || []).find(item => this.normalizeName(item.name) === wanted);
                 if (user) return user.id;
-                url = payload.meta?.next_page_link || null;
+                if (!payload.meta?.next_page_link) break;
             }
             throw new Error(`Collaborateur Aircall introuvable : ${userName}`);
         },
@@ -1815,7 +1251,7 @@
         async insight(callId, endpoint) {
             await Utils.delay(650);
             try {
-                return await this.request(`https://api.aircall.io/v1/calls/${callId}/${endpoint}`);
+                return await this.request(`/api/report/calls/${encodeURIComponent(callId)}/${encodeURIComponent(endpoint)}`);
             } catch (error) {
                 Utils.log(`Aircall ${endpoint} indisponible pour ${callId}: ${error.message}`);
                 return null;
@@ -1825,15 +1261,14 @@
         async collectDirect(connectedUser, reportDate, updateLoader) {
             const userId = await this.findUserId(connectedUser);
             const range = this.dateRange(reportDate);
-            let url = `https://api.aircall.io/v1/calls/search?user_id=${encodeURIComponent(userId)}` +
-                `&from=${range.from}&to=${range.to}&order=asc&per_page=50&fetch_contact=true&page=1`;
-            const calls = [];
-            const seen = new Set();
-            let page = 0;
-            while (url) {
-                page++;
-                updateLoader(`API Aircall directe : page ${page}...`);
-                const payload = await this.request(url);
+            const calls = [], seen = new Set();
+            for (let page = 1; page <= 250; page++) {
+                updateLoader(`API Aircall via Netlify : page ${page}...`);
+                const q = new URLSearchParams({
+                    user_id: String(userId), from: String(range.from), to: String(range.to),
+                    order: 'asc', per_page: '50', fetch_contact: 'true', page: String(page)
+                });
+                const payload = await this.request(`/api/report/calls?${q.toString()}`);
                 for (const call of payload.calls || []) {
                     if (seen.has(call.id)) continue;
                     seen.add(call.id);
@@ -1856,8 +1291,7 @@
                         source: 'api'
                     });
                 }
-                url = payload.meta?.next_page_link || null;
-                if (page > 250) throw new Error('Pagination Aircall anormalement longue');
+                if (!payload.meta?.next_page_link) break;
             }
 
             const answered = calls.filter(call => call.answered);
@@ -1869,113 +1303,37 @@
                 const topicsPayload = await this.insight(call.id, 'topics');
                 const actionsPayload = await this.insight(call.id, 'action_items');
                 const transcriptPayload = await this.insight(call.id, 'transcription');
-                const sentiment = sentimentPayload?.sentiment?.participants?.find(p => p.type === 'external')?.value
+                const externalSentiment = sentimentPayload?.sentiment?.participants?.find(p => p.type === 'external')?.value
                     || sentimentPayload?.sentiment?.participants?.[0]?.value || null;
                 const moodMap = { POSITIVE: 'Positif', NEGATIVE: 'Négatif', NEUTRAL: 'Neutre' };
-                call.summary = summaryPayload?.summary?.content || call.summary;
-                call.mood = moodMap[String(sentiment || '').toUpperCase()] || sentiment;
+                const utterances = transcriptPayload?.transcription?.content?.utterances || [];
+                call.summary = summaryPayload?.summary?.content || call.summary || null;
+                call.mood = moodMap[String(externalSentiment || '').toUpperCase()] || externalSentiment || null;
                 call.topics = Array.isArray(topicsPayload?.topic?.content) ? topicsPayload.topic.content : [];
                 call.actionItems = (actionsPayload?.action_items || []).map(item => typeof item === 'string' ? item : item?.content).filter(Boolean);
-                const utterances = transcriptPayload?.transcription?.content?.utterances || [];
-                call.transcript = utterances.map(item => `${item.participant_type === 'internal' ? 'Collaborateur' : 'Interlocuteur'} : ${item.text || ''}`).join('\n');
+                call.transcript = utterances.map(item => {
+                    const speaker = item.participant_type === 'internal' ? 'Collaborateur' : (item.participant_type === 'external' ? 'Interlocuteur' : 'Autre');
+                    return `${speaker} : ${item.text || ''}`;
+                }).filter(line => !line.endsWith(': ')).join('\n');
                 call.transcriptLanguage = transcriptPayload?.transcription?.content?.language || null;
             }
             return calls;
         },
 
-        async collect(connectedUser, updateLoader) {
+        async collect(connectedUser, reportDate, updateLoader) {
             if (!CONFIG.AIRCALL_ENABLED) {
-                Utils.log('Aircall désactivé dans la config');
+                this.lastStatus = { state: 'disabled', source: null, message: 'Aircall désactivé' };
                 return [];
             }
-
-            Utils.log('=== COLLECTE APPELS AIRCALL ===');
-            Utils.log('Utilisateur:', connectedUser);
-            const reportDate = Utils.getTodayDate();
-
-            const credentials = this.credentials();
-            if (credentials.id && credentials.token) {
-                try {
-                    updateLoader('Connexion directe à l’API Aircall...');
-                    const calls = await this.collectDirect(connectedUser, reportDate, updateLoader);
-                    this.lastStatus = {
-                        state: 'complete', source: 'api',
-                        message: `API Aircall directe : ${calls.length} appel${calls.length > 1 ? 's' : ''} trouvé${calls.length > 1 ? 's' : ''}`
-                    };
-                    return calls;
-                } catch (error) {
-                    this.lastStatus = { state: 'error', source: 'api', message: `Erreur API Aircall : ${error.message}` };
-                    throw error;
-                }
+            try {
+                updateLoader('Connexion Aircall sécurisée via Netlify...');
+                const calls = await this.collectDirect(connectedUser, reportDate, updateLoader);
+                this.lastStatus = { state: 'complete', source: 'api', message: `API Aircall via Netlify : ${calls.length} appel${calls.length > 1 ? 's' : ''} trouvé${calls.length > 1 ? 's' : ''}` };
+                return calls;
+            } catch (error) {
+                this.lastStatus = { state: 'error', source: 'api', message: `Erreur API Aircall : ${error.message}` };
+                throw error;
             }
-
-            return new Promise((resolve) => {
-                updateLoader('Ouverture de Aircall...');
-
-                // Encoder les paramètres dans l'URL
-                const params = new URLSearchParams({
-                    ltoa_user: connectedUser,
-                    ltoa_date: reportDate,
-                    ltoa_autoclose: 'true',
-                    ltoa_timestamp: Date.now().toString()
-                });
-
-                const aircallUrl = `https://dashboard.aircall.io/conversations?${params.toString()}`;
-                Utils.log('Ouverture Aircall:', aircallUrl);
-
-                // Écouter les messages de l'onglet Aircall
-                const messageHandler = (event) => {
-                    // Vérifier l'origine
-                    if (!event.origin.includes('aircall.io')) return;
-
-                    const data = event.data;
-                    if (data && data.type === 'LTOA_AIRCALL_RESPONSE') {
-                        Utils.log('Réponse Aircall reçue via postMessage:', data);
-
-                        // Nettoyer
-                        window.removeEventListener('message', messageHandler);
-                        clearTimeout(timeoutId);
-
-                        if (data.success) {
-                            this.lastStatus = {
-                                state: data.collectionStatus || 'partial',
-                                source: data.collectionSource || 'dashboard',
-                                message: data.collectionStatus === 'complete'
-                                    ? 'Collecte API complète'
-                                    : 'Collecte visuelle : résultat potentiellement partiel'
-                            };
-                            Utils.log(`${data.calls.length} appels reçus d'Aircall`);
-                            resolve(data.calls || []);
-                        } else {
-                            this.lastStatus = { state: 'error', source: null, message: data.error || 'Erreur Aircall' };
-                            Utils.log('Erreur Aircall:', data.error);
-                            resolve([]);
-                        }
-                    } else if (data && data.type === 'LTOA_AIRCALL_STATUS') {
-                        updateLoader(`Aircall: ${data.message}`);
-                    }
-                };
-
-                window.addEventListener('message', messageHandler);
-
-                // Ouvrir Aircall dans un nouvel onglet
-                this.aircallWindow = window.open(aircallUrl, 'ltoa_aircall', 'width=1200,height=800');
-
-                // Si le popup est bloqué, ouvrir normalement
-                if (!this.aircallWindow) {
-                    Utils.log('Popup bloqué, ouverture normale...');
-                    GM_openInTab(aircallUrl, { active: true, insert: true });
-                }
-
-                // Timeout
-                const timeoutId = setTimeout(() => {
-                    Utils.log('Timeout Aircall (2 minutes)');
-                    window.removeEventListener('message', messageHandler);
-                    updateLoader('Timeout Aircall - rapport sans appels');
-                    this.lastStatus = { state: 'error', source: null, message: 'Délai Aircall dépassé : zéro non fiable' };
-                    resolve([]);
-                }, CONFIG.AIRCALL_TIMEOUT);
-            });
         }
     };
 
@@ -6307,12 +5665,9 @@
                             ">${Utils.escapeHtml(REPORT_NOTES)}</textarea>
                         </div>
 
-                        <div style="margin-bottom:20px;padding:12px 14px;background:#f5f7fa;border:1px solid #e0e0e0;border-radius:8px;display:flex;align-items:center;justify-content:space-between;gap:15px;">
-                            <div>
-                                <div style="font-size:13px;font-weight:600;color:#333;">Connexion Aircall</div>
-                                <div id="ltoa-aircall-config-status" style="font-size:11px;color:#777;margin-top:3px;">${GM_getValue('ltoa_aircall_api_id', '') && GM_getValue('ltoa_aircall_api_token', '') ? 'API configurée sur cet ordinateur' : 'API non configurée'}</div>
-                            </div>
-                            <button type="button" id="ltoa-configure-aircall" style="padding:9px 12px;border:1px solid #1976d2;background:white;color:#1976d2;border-radius:6px;cursor:pointer;font-size:12px;font-weight:600;white-space:nowrap;">⚙ Configurer</button>
+                        <div style="margin-bottom:20px;padding:12px 14px;background:#f5f7fa;border:1px solid #e0e0e0;border-radius:8px;">
+                            <div style="font-size:13px;font-weight:600;color:#333;">Connexion Aircall</div>
+                            <div style="font-size:11px;color:#777;margin-top:3px;">Sécurisée via Netlify · aucune configuration nécessaire</div>
                         </div>
 
                         <div style="display: flex; gap: 10px; margin-top: 25px;">
@@ -6392,16 +5747,6 @@
             document.getElementById('ltoa-date-cancel').addEventListener('click', () => {
                 modal.remove();
                 resolve(null);
-            });
-
-            document.getElementById('ltoa-configure-aircall').addEventListener('click', (event) => {
-                event.preventDefault();
-                event.stopPropagation();
-                configureAircallApi();
-                const status = document.getElementById('ltoa-aircall-config-status');
-                if (status && GM_getValue('ltoa_aircall_api_id', '') && GM_getValue('ltoa_aircall_api_token', '')) {
-                    status.textContent = 'API configurée sur cet ordinateur';
-                }
             });
 
             // Confirmer
