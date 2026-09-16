@@ -4,14 +4,8 @@ P = Path('LTOA-Modulr-Rapport-Quotidien.user.js')
 s = P.read_text(encoding='utf-8')
 
 s = s.replace('// @version      5.2.1', '// @version      5.3.0', 1)
-for line in (
-    '// @match        https://*.aircall.io/*\n',
-    '// @grant        GM_getValue\n',
-    '// @grant        GM_setValue\n',
-    '// @grant        GM_registerMenuCommand\n',
-    '// @connect      api.aircall.io\n',
-):
-    s = s.replace(line, '', 1)
+s = s.replace('// @match        https://*.aircall.io/*\n', '', 1)
+s = s.replace('// @connect      api.aircall.io\n', '', 1)
 
 start = s.index("    const configureAircallApi = () => {")
 end_marker = "    GM_registerMenuCommand('Configurer l’API Aircall pour les rapports', configureAircallApi);\n"
@@ -180,10 +174,13 @@ replacement = r'''    // ============================================
 
 s = s[:start] + replacement + s[end:]
 
-forbidden = ['ltoa_aircall_api_id', 'ltoa_aircall_api_token', 'api.aircall.io', 'configureAircallApi', 'GM_getValue', 'GM_setValue', 'GM_registerMenuCommand']
+forbidden = ['ltoa_aircall_api_id', 'ltoa_aircall_api_token', 'api.aircall.io', 'configureAircallApi', 'Authorization: `Basic']
 left = [x for x in forbidden if x in s]
 if left:
-    raise SystemExit(f'Forbidden references remain: {left}')
+    for n, line in enumerate(s.splitlines(), 1):
+        if any(x in line for x in left):
+            print(f'RESIDUAL {n}: {line[:220]}')
+    raise SystemExit(f'Forbidden Aircall references remain: {left}')
 if 'https://aircallmodulr.netlify.app' not in s:
     raise SystemExit('Netlify root missing')
 
