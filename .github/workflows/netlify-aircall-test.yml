@@ -1,0 +1,30 @@
+name: Netlify Aircall migration test
+on:
+  push:
+    branches:
+      - netlify-aircall
+permissions:
+  contents: write
+jobs:
+  migrate-and-test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: netlify-aircall
+          fetch-depth: 0
+      - name: Apply migration
+        run: python3 scripts/migrate_aircall_netlify.py
+      - name: Syntax check
+        run: node --check LTOA-Modulr-Rapport-Quotidien.user.js
+      - name: Security assertions
+        run: |
+          ! grep -Eq 'ltoa_aircall_api_id|ltoa_aircall_api_token|api\.aircall\.io|Authorization:.*Basic|GM_getValue|GM_setValue|GM_registerMenuCommand' LTOA-Modulr-Rapport-Quotidien.user.js
+          grep -q 'https://aircallmodulr.netlify.app' LTOA-Modulr-Rapport-Quotidien.user.js
+      - name: Commit tested migration
+        run: |
+          git config user.name 'LTOA migration bot'
+          git config user.email 'actions@users.noreply.github.com'
+          git add LTOA-Modulr-Rapport-Quotidien.user.js
+          git commit -m 'Route Rapport Quotidien Aircall through Netlify'
+          git push origin HEAD:netlify-aircall
