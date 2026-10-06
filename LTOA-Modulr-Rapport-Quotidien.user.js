@@ -1627,6 +1627,51 @@
     };
 
     // ============================================
+    // COLLECTEUR DES TÂCHES ACTUELLEMENT À TRAITER
+    // ============================================
+    const PendingTasksCollector = {
+        collect: async function collectPendingTasks(userId, connectedUser, updateLoader) {
+    const results = [];
+    try {
+        if (updateLoader) updateLoader('Comptage des tâches actuellement à traiter...');
+        const baseUrl = 'https://courtage.modulr.fr/fr/scripts/Tasks/TasksList.php';
+        const params = new URLSearchParams({
+            'tasks_filters[task_recipient]': userId.taskValue,
+            'tasks_filters[task_status]': ''
+        });
+        const html = await Utils.fetchPage(`${baseUrl}?${params.toString()}`);
+        const doc = Utils.parseHTML(html);
+        const rows = Array.from(doc.querySelectorAll('tr[id^="task:"]'));
+
+        for (const row of rows) {
+            const taskId = row.id.replace('task:', '');
+            const title = row.querySelector('span.font_size_higher')?.textContent?.trim() || 'Tâche';
+            const clientLink = row.querySelector('a[href*="clients_card"]');
+            const dateCell = row.querySelector('td.align_center');
+            const dueDate = dateCell?.querySelector('span:last-child')?.textContent?.trim() || '';
+            const daysOverdue = TasksOverdueCollector.calculateDaysOverdue(dueDate);
+
+            results.push({
+                id: taskId,
+                title,
+                client: clientLink ? clientLink.textContent.trim() : 'Non associé',
+                clientId: clientLink ? (clientLink.href.match(/id=(\d+)/) || [])[1] : null,
+                assignedTo: connectedUser,
+                dueDate,
+                daysOverdue,
+                isOverdue: daysOverdue > 0
+            });
+        }
+
+        Utils.log(`${results.length} tâches actuellement à traiter trouvées`);
+    } catch (error) {
+        Utils.log('Erreur comptage tâches à traiter:', error);
+    }
+    return results;
+}
+    };
+
+    // ============================================
     // COLLECTEUR DE TÂCHES EN RETARD
     // ============================================
     const TasksOverdueCollector = {
@@ -2662,6 +2707,7 @@
             aircallCalls: [],
             tasksCompleted: [],
             tasksOverdue: [],
+            pendingTasks: [],
             logs: [],
             estimates: [],
             policies: [],
@@ -2673,58 +2719,84 @@
         generateHTML() {
             const {
                 emailsSent = [], emailsAffected = [], pendingEmailsCount = 0,
-                aircallCalls = [], tasksCompleted = [], tasksOverdue = [],
+                aircallCalls = [], tasksCompleted = [], tasksOverdue = [], pendingTasks = [],
                 logs = [], estimates = [], policies = [], claims = [],
                 assignedEstimates = { total: 0, statuses: [] },
-                user, date, notes, aircallStatus
+                user, date, aircallStatus
             } = this.data;
-
-            const clean = value => Utils.escapeHtml(Utils.cleanRichText(value || ''));
+        
             const realToday = Utils.getRealTodayDate();
             const isPastDate = date !== realToday;
-
             const estimateCounts = ActivityDictionary.counts(estimates);
             const policyCounts = ActivityDictionary.counts(policies);
             const claimCounts = ActivityDictionary.counts(claims);
-
-            const formatCountLine = counts => [
-                counts.creation ? `${counts.creation} création${counts.creation > 1 ? 's' : ''}` : '',
-                counts.update ? `${counts.update} modification${counts.update > 1 ? 's' : ''}` : '',
-                counts.deletion ? `${counts.deletion} suppression${counts.deletion > 1 ? 's' : ''}` : ''
-            ].filter(Boolean).join(' · ') || 'Aucune action';
-
-            const renderSubtypeLine = counts => {
-                const labels = {
-                    apporteur: 'apporteur',
-                    compagnie: 'compagnie',
-                    etat: 'état',
-                    referent: 'référent',
-                    produit: 'produit',
-                    tarif: 'tarif / prime',
-                    dates: 'dates',
-                    client: 'client',
-                    autre: 'autre'
-                };
-                const items = Object.entries(counts.subtypes || {})
-                    .filter(([, count]) => count > 0)
-                    .map(([key, count]) => `${count} ${labels[key] || key}`);
-                return items.join(' · ');
+            const overduePendingTasks = pendingTasks.filter(task => task.daysOverdue > 0).length;
+            const normalPendingTasks = Math.max(0, pendingTasks.length - overduePendingTasks);
+            const totalPending = (assignedEstimates.total || 0) + (pendingEmailsCount || 0) + pendingTasks.length;
+        
+            const subtypeLabels = {
+                apporteur: 'Apporteur',
+                compagnie: 'Compagnie',
+                etat: 'État',
+                referent: 'Référent',
+                produit: 'Produit',
+                tarif: 'Tarif / prime',
+                dates: 'Dates',
+                client: 'Client',
+                autre: 'Autre modification'
             };
-
+        
+            const productLabel = log => {
+                const changes = log?.changes || [];
+                const productChange = changes.find(change => change.fieldRaw === 'product_type_id')
+                    || changes.find(change => change.fieldRaw === 'product_id');
+                if (!productChange) return '—';
+                const value = productChange.newValue || productChange.newValueRaw || productChange.oldValue || productChange.oldValueRaw || '';
+                return value && value !== '-' ? Utils.translateValue(value) : '—';
+            };
+        
             const renderLogRows = (items, entityLabel) => (items || []).map(log => {
                 const classification = ActivityDictionary.classify(log);
-                const client = log.clientName || (log.clientId ? `Client n° ${log.clientId}` : '');
+                const client = log.clientName || (log.clientId ? `Client n° ${log.clientId}` : '—');
+                const ref = `${entityLabel} n° ${log.entityId || '—'}`;
                 return `
-                    <tr>
+                    <tr data-kind="${classification.kind}" data-subtype="${classification.subtype || ''}">
                         <td class="ltoa-time">${Utils.escapeHtml(log.date || '')}</td>
                         <td><span class="ltoa-tag ltoa-${classification.kind}">${Utils.escapeHtml(classification.label)}</span></td>
-                        <td class="ltoa-client">${Utils.escapeHtml(client || '—')}</td>
-                        <td>${Utils.escapeHtml(log.entityName && log.entityName !== 'N/A' ? log.entityName : `${entityLabel} n° ${log.entityId || ''}`)}</td>
+                        <td class="ltoa-client">${Utils.escapeHtml(client)}</td>
+                        <td>${Utils.escapeHtml(productLabel(log))}</td>
+                        <td class="ltoa-ref">${Utils.escapeHtml(ref)}</td>
                         <td>${Utils.escapeHtml(ActivityDictionary.summarize(log))}</td>
                     </tr>`;
             }).join('');
-
-            const renderTaskCards = (items, overdue = false) => (items || []).map(task => {
+        
+            const renderMetricButtons = (scope, counts, total, title) => {
+                const parts = [];
+                if (counts.creation) parts.push(`<button type="button" class="ltoa-metric-btn" data-section="${scope}" data-kind="creation" data-detail-title="${Utils.escapeHtml(title)} · ${counts.creation} création${counts.creation > 1 ? 's' : ''}"><b>${counts.creation}</b> création${counts.creation > 1 ? 's' : ''}</button>`);
+                if (counts.update) parts.push(`<button type="button" class="ltoa-metric-btn" data-section="${scope}" data-kind="update" data-detail-title="${Utils.escapeHtml(title)} · ${counts.update} modification${counts.update > 1 ? 's' : ''}"><b>${counts.update}</b> modification${counts.update > 1 ? 's' : ''}</button>`);
+                if (counts.deletion) parts.push(`<button type="button" class="ltoa-metric-btn" data-section="${scope}" data-kind="deletion" data-detail-title="${Utils.escapeHtml(title)} · ${counts.deletion} suppression${counts.deletion > 1 ? 's' : ''}"><b>${counts.deletion}</b> suppression${counts.deletion > 1 ? 's' : ''}</button>`);
+                return parts.length ? parts.join('') : `<span class="ltoa-muted">Aucune action</span>`;
+            };
+        
+            const renderSubtypeButtons = (scope, counts, title) => {
+                const items = Object.entries(counts.subtypes || {}).filter(([, count]) => count > 0);
+                if (!items.length) return '';
+                return `
+                    <div class="ltoa-breakdown">
+                        <div class="ltoa-breakdown-label">Détail des modifications</div>
+                        <div class="ltoa-breakdown-grid">
+                            ${items.map(([key, count]) => `
+                                <button type="button" class="ltoa-subtype-btn" data-section="${scope}" data-kind="update" data-subtype="${key}" data-detail-title="${Utils.escapeHtml(title)} · ${count} ${Utils.escapeHtml(subtypeLabels[key] || key)}">
+                                    <b>${count}</b>
+                                    <span>${Utils.escapeHtml(subtypeLabels[key] || key)}</span>
+                                    <small>Voir les dossiers</small>
+                                </button>
+                            `).join('')}
+                        </div>
+                    </div>`;
+            };
+        
+            const renderTaskCards = items => (items || []).map(task => {
                 const text = Utils.cleanRichText(task.content || '');
                 return `
                     <div class="ltoa-row-card">
@@ -2732,36 +2804,21 @@
                             <strong>${Utils.escapeHtml(task.title || 'Tâche')}</strong>
                             <span>${Utils.escapeHtml(task.clientName || task.client || 'Sans client')}</span>
                         </div>
-                        <div class="ltoa-row-meta">
-                            ${overdue ? `${task.daysOverdue || 0} j de retard · échéance ${Utils.escapeHtml(task.dueDate || '')}`
-                                      : `${Utils.escapeHtml(task.closedTime || task.time || '')}`}
-                        </div>
+                        <div class="ltoa-row-meta">${Utils.escapeHtml(task.closedTime || task.time || '')}</div>
                         ${text ? `<div class="ltoa-note-text">${Utils.escapeHtml(text)}</div>` : ''}
                     </div>`;
             }).join('');
-
-            const renderAssigned = () => {
-                if (!assignedEstimates || !assignedEstimates.statuses?.length) return '';
-                return `
-                    <div class="ltoa-assigned">
-                        <div class="ltoa-assigned-total"><strong>${assignedEstimates.total}</strong><span>devis actuellement assignés</span></div>
-                        <div class="ltoa-assigned-statuses">
-                            ${assignedEstimates.statuses.map(item => `
-                                <span><b>${item.count}</b> ${Utils.escapeHtml(item.label)}</span>
-                            `).join('')}
-                        </div>
-                    </div>`;
-            };
-
-            const section = (id, title, count, summary, body, open = false) => `
-                <details class="ltoa-section" ${open ? 'open' : ''}>
+        
+            const section = (id, title, count, summary, body) => `
+                <details class="ltoa-section" id="ltoa-section-${id}">
                     <summary>
-                        <div><strong>${title}</strong><span class="ltoa-badge">${count}</span></div>
-                        <span class="ltoa-section-summary">${summary}</span>
+                        <div class="ltoa-section-name"><strong>${title}</strong><span class="ltoa-badge">${count}</span></div>
+                        <div class="ltoa-section-summary">${summary}</div>
+                        <span class="ltoa-chevron">⌄</span>
                     </summary>
                     <div class="ltoa-section-body">${body}</div>
                 </details>`;
-
+        
             const table = (headers, rows, emptyText) => rows ? `
                 <div class="ltoa-table-wrap">
                     <table class="ltoa-table">
@@ -2769,29 +2826,35 @@
                         <tbody>${rows}</tbody>
                     </table>
                 </div>` : `<div class="ltoa-empty">${emptyText}</div>`;
-
-            const emailRows = emailsSent.map(email => `
-                <tr>
-                    <td class="ltoa-time">${Utils.escapeHtml(email.time || email.date || '')}</td>
-                    <td>${Utils.escapeHtml(email.clientName || email.toEmail || '—')}</td>
-                    <td>${Utils.escapeHtml(email.subject || 'Sans objet')}</td>
-                </tr>`).join('');
-
-            const affectedRows = emailsAffected.map(email => `
-                <tr>
-                    <td class="ltoa-time">${Utils.escapeHtml(email.time || email.date || '')}</td>
-                    <td>${Utils.escapeHtml(email.clientName || email.fromEmail || '—')}</td>
-                    <td>${Utils.escapeHtml(email.subject || 'Sans objet')}</td>
-                </tr>`).join('');
-
+        
+            const emailRows = [
+                ...emailsSent.map(email => `
+                    <tr data-kind="sent">
+                        <td class="ltoa-time">${Utils.escapeHtml(email.time || email.date || '')}</td>
+                        <td><span class="ltoa-tag ltoa-creation">Envoyé</span></td>
+                        <td class="ltoa-client">${Utils.escapeHtml(email.clientName || email.toEmail || '—')}</td>
+                        <td class="ltoa-ref">Email n° ${Utils.escapeHtml(email.id || '—')}</td>
+                        <td>${Utils.escapeHtml(email.subject || 'Sans objet')}</td>
+                    </tr>`),
+                ...emailsAffected.map(email => `
+                    <tr data-kind="affected">
+                        <td class="ltoa-time">${Utils.escapeHtml(email.time || email.date || '')}</td>
+                        <td><span class="ltoa-tag ltoa-update">Affecté / traité</span></td>
+                        <td class="ltoa-client">${Utils.escapeHtml(email.clientName || email.fromEmail || email.from || '—')}</td>
+                        <td class="ltoa-ref">Email n° ${Utils.escapeHtml(email.id || '—')}</td>
+                        <td>${Utils.escapeHtml(email.subject || 'Sans objet')}</td>
+                    </tr>`)
+            ].join('');
+        
             const callRows = aircallCalls.map(call => `
-                <tr>
+                <tr data-kind="${call.type === 'entrant' ? 'inbound' : 'outbound'}">
                     <td class="ltoa-time">${Utils.escapeHtml(call.time || '')}</td>
                     <td>${call.type === 'entrant' ? 'Entrant' : 'Sortant'}</td>
-                    <td>${Utils.escapeHtml(call.contact || call.phone || '—')}</td>
+                    <td class="ltoa-client">${Utils.escapeHtml(call.contact || call.phone || '—')}</td>
                     <td>${Utils.escapeHtml(call.duration || '')}</td>
+                    <td>${Utils.escapeHtml(call.summary || '—')}</td>
                 </tr>`).join('');
-
+        
             const otherRows = logs.map(log => `
                 <tr>
                     <td class="ltoa-time">${Utils.escapeHtml(log.date || '')}</td>
@@ -2799,144 +2862,195 @@
                     <td>${Utils.escapeHtml(log.entityName || '')}</td>
                     <td>${Utils.escapeHtml(ActivityDictionary.summarize(log))}</td>
                 </tr>`).join('');
-
-            const estimateSubtypeLine = renderSubtypeLine(estimateCounts);
-            const policySubtypeLine = renderSubtypeLine(policyCounts);
-            const claimSubtypeLine = renderSubtypeLine(claimCounts);
-
+        
+            const assignedStatuses = (assignedEstimates.statuses || []).map(item => `
+                <span class="ltoa-work-status"><b>${item.count}</b><small>${Utils.escapeHtml(item.label)}</small></span>
+            `).join('');
+        
+            const emailSummary = `
+                <button type="button" class="ltoa-metric-btn" data-section="emails" data-kind="sent" data-detail-title="Emails · ${emailsSent.length} envoyés"><b>${emailsSent.length}</b> envoyés</button>
+                <button type="button" class="ltoa-metric-btn" data-section="emails" data-kind="affected" data-detail-title="Emails · ${emailsAffected.length} affectés / traités"><b>${emailsAffected.length}</b> affectés / traités</button>`;
+        
+            const callInbound = aircallCalls.filter(call => call.type === 'entrant').length;
+            const callOutbound = aircallCalls.filter(call => call.type === 'sortant').length;
+            const callSummary = `
+                <button type="button" class="ltoa-metric-btn" data-section="calls" data-kind="inbound" data-detail-title="Appels · ${callInbound} entrants"><b>${callInbound}</b> entrants</button>
+                <button type="button" class="ltoa-metric-btn" data-section="calls" data-kind="outbound" data-detail-title="Appels · ${callOutbound} sortants"><b>${callOutbound}</b> sortants</button>`;
+        
             return `
                 <div id="ltoa-report-modal">
                     <style>
-                        #ltoa-report-modal{position:fixed;inset:0;z-index:2147483647;background:#f5f6f8;color:#1d2733;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Arial,sans-serif;overflow:auto}
+                        #ltoa-report-modal{position:fixed;inset:0;z-index:2147483647;background:radial-gradient(circle at top left,rgba(37,99,235,.07),transparent 27%),#f5f7fb;color:#101828;font-family:Inter,-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Arial,sans-serif;overflow:auto}
                         #ltoa-report-modal *{box-sizing:border-box}
-                        .ltoa-shell{min-height:100vh}
-                        .ltoa-topbar{position:sticky;top:0;z-index:3;height:64px;background:#fff;border-bottom:1px solid #e4e7eb;display:flex;align-items:center;justify-content:space-between;padding:0 28px}
-                        .ltoa-title{display:flex;align-items:baseline;gap:14px}.ltoa-title h1{font-size:21px;margin:0;font-weight:700}.ltoa-title span{font-size:13px;color:#687584}
-                        .ltoa-actions{display:flex;gap:8px}.ltoa-btn{border:1px solid #d7dce2;background:#fff;border-radius:8px;padding:8px 12px;font-size:12px;cursor:pointer;color:#344150}.ltoa-btn:hover{background:#f4f6f8}.ltoa-close{font-size:18px;line-height:1;padding:7px 10px}
-                        .ltoa-main{max-width:1480px;margin:0 auto;padding:22px 28px 42px}
-                        .ltoa-note{background:#fff7db;border:1px solid #f1df9d;border-radius:10px;padding:13px 16px;margin-bottom:14px;white-space:pre-wrap;font-size:13px;line-height:1.5}
-                        .ltoa-warning{background:#fff1f1;border:1px solid #f0c7c7;color:#9b2c2c;border-radius:10px;padding:11px 14px;margin-bottom:14px;font-size:12px}
-                        .ltoa-summary{display:grid;grid-template-columns:repeat(6,minmax(0,1fr));gap:10px;margin-bottom:14px}
-                        .ltoa-kpi{background:#fff;border:1px solid #e4e7eb;border-radius:10px;padding:14px 15px;min-width:0}.ltoa-kpi strong{display:block;font-size:22px;line-height:1.1}.ltoa-kpi span{font-size:11px;color:#728090}
-                        .ltoa-section{background:#fff;border:1px solid #e1e5ea;border-radius:11px;margin-bottom:10px;overflow:hidden}
-                        .ltoa-section>summary{list-style:none;cursor:pointer;display:flex;align-items:center;justify-content:space-between;gap:20px;padding:15px 17px;min-height:54px}.ltoa-section>summary::-webkit-details-marker{display:none}
-                        .ltoa-section>summary>div{display:flex;align-items:center;gap:9px;min-width:160px}.ltoa-section>summary strong{font-size:14px}.ltoa-badge{background:#eef1f4;border-radius:999px;padding:3px 8px;font-size:11px;color:#536170}
-                        .ltoa-section-summary{color:#697786;font-size:12px;text-align:right}.ltoa-section[open]>summary{border-bottom:1px solid #e8ebef}
-                        .ltoa-section-body{padding:16px 17px 18px}
-                        .ltoa-assigned{display:flex;align-items:flex-start;gap:18px;padding:12px 14px;background:#f7f9fb;border:1px solid #e6e9ed;border-radius:9px;margin-bottom:14px}
-                        .ltoa-assigned-total{min-width:150px}.ltoa-assigned-total strong{font-size:24px;display:block}.ltoa-assigned-total span{font-size:11px;color:#687584}.ltoa-assigned-statuses{display:flex;flex-wrap:wrap;gap:8px}.ltoa-assigned-statuses span{font-size:11px;background:#fff;border:1px solid #e1e5ea;padding:6px 8px;border-radius:7px}.ltoa-assigned-statuses b{font-size:13px}
-                        .ltoa-subtypes{font-size:12px;color:#5f6d7a;margin:0 0 12px}
-                        .ltoa-table-wrap{overflow:auto;border:1px solid #e4e7eb;border-radius:8px}.ltoa-table{width:100%;border-collapse:collapse;font-size:12px;background:#fff}.ltoa-table th{background:#f6f7f9;text-align:left;font-weight:600;color:#596675;padding:9px 10px;border-bottom:1px solid #e4e7eb;white-space:nowrap}.ltoa-table td{padding:9px 10px;border-bottom:1px solid #edf0f2;vertical-align:top}.ltoa-table tr:last-child td{border-bottom:0}.ltoa-time{white-space:nowrap;color:#6d7986}.ltoa-client{font-weight:600}
-                        .ltoa-tag{display:inline-block;border-radius:999px;padding:3px 7px;font-size:10px;font-weight:600}.ltoa-creation{background:#e9f7ef;color:#267344}.ltoa-update{background:#eef3ff;color:#315ea8}.ltoa-deletion{background:#fff0ef;color:#ae3b32}
-                        .ltoa-row-card{border-bottom:1px solid #edf0f2;padding:11px 0}.ltoa-row-card:first-child{padding-top:0}.ltoa-row-card:last-child{border-bottom:0;padding-bottom:0}.ltoa-row-main{display:flex;gap:8px;align-items:baseline;flex-wrap:wrap}.ltoa-row-main strong{font-size:13px}.ltoa-row-main span{font-size:11px;color:#6e7a87}.ltoa-row-meta{font-size:10px;color:#89939d;margin-top:3px}.ltoa-note-text{margin-top:7px;background:#f7f8fa;border-radius:7px;padding:9px 10px;white-space:pre-wrap;line-height:1.45;font-size:12px;color:#3e4954}
-                        .ltoa-two-col{display:grid;grid-template-columns:1fr 1fr;gap:18px}.ltoa-col-title{font-size:12px;font-weight:700;margin:0 0 10px}.ltoa-empty{font-size:12px;color:#8a949e;padding:6px 0}
-                        @media(max-width:1000px){.ltoa-summary{grid-template-columns:repeat(3,1fr)}.ltoa-two-col{grid-template-columns:1fr}.ltoa-main{padding:16px}.ltoa-topbar{padding:0 16px}.ltoa-section-summary{display:none}}
+                        .ltoa-shell{min-height:100vh;display:grid;grid-template-columns:230px minmax(0,1fr)}
+                        .ltoa-sidebar{position:sticky;top:0;height:100vh;padding:22px 16px;border-right:1px solid #e7ebf0;background:rgba(255,255,255,.72);backdrop-filter:blur(16px)}
+                        .ltoa-brand{display:flex;align-items:center;gap:11px;padding:8px 10px 20px}.ltoa-logo{width:36px;height:36px;border-radius:11px;background:linear-gradient(135deg,#2563eb,#78a8ff);color:#fff;display:grid;place-items:center;font-weight:800;box-shadow:0 10px 22px rgba(37,99,235,.22)}.ltoa-brand strong{font-size:20px}.ltoa-brand small{display:block;color:#7b8795;margin-top:2px}
+                        .ltoa-nav{background:rgba(255,255,255,.9);border:1px solid #edf0f4;border-radius:18px;padding:9px;box-shadow:0 12px 30px rgba(15,23,42,.04)}.ltoa-nav-label{font-size:10px;text-transform:uppercase;letter-spacing:.08em;color:#98a2b3;padding:8px 10px}.ltoa-nav-btn{width:100%;border:0;background:transparent;border-radius:12px;padding:10px 11px;text-align:left;cursor:pointer;color:#344054;font-size:12px;margin:2px 0}.ltoa-nav-btn:hover{background:#f5f7fb}.ltoa-nav-btn.active{background:#f7faff;box-shadow:inset 0 0 0 1px #dfe9ff;color:#1d4ed8}
+                        .ltoa-content{min-width:0}.ltoa-topbar{position:sticky;top:0;z-index:5;min-height:74px;background:rgba(248,250,253,.88);backdrop-filter:blur(16px);border-bottom:1px solid rgba(228,231,235,.78);display:flex;align-items:center;justify-content:space-between;padding:13px 24px}
+                        .ltoa-title h1{font-size:27px;margin:0 0 3px;font-weight:760;letter-spacing:-.03em}.ltoa-title span{font-size:12px;color:#7a8695}.ltoa-actions{display:flex;align-items:center;gap:8px}.ltoa-user-pill{border:1px solid #e5e9ef;background:#fff;border-radius:999px;padding:9px 12px;font-size:12px;font-weight:700;color:#344054}.ltoa-btn{border:1px solid #e1e6ec;background:#fff;border-radius:999px;padding:9px 12px;font-size:12px;cursor:pointer;color:#344150}.ltoa-btn:hover{background:#f7f9fb}.ltoa-close{font-size:18px;line-height:1;padding:7px 10px}
+                        .ltoa-main{max-width:1500px;margin:0 auto;padding:22px 24px 42px}
+                        .ltoa-warning{background:#fff1f1;border:1px solid #f0c7c7;color:#9b2c2c;border-radius:12px;padding:11px 14px;margin-bottom:14px;font-size:12px}
+                        .ltoa-workload{width:100%;background:linear-gradient(180deg,rgba(255,255,255,.96),rgba(255,255,255,.82));border:1px solid rgba(228,231,235,.92);border-radius:24px;padding:20px;box-shadow:0 18px 50px rgba(15,23,42,.06);margin-bottom:24px}
+                        .ltoa-work-head{display:flex;justify-content:space-between;align-items:flex-end;gap:20px;margin-bottom:16px}.ltoa-kicker{font-size:10px;color:#98a2b3;text-transform:uppercase;letter-spacing:.09em;margin-bottom:5px}.ltoa-work-head h2,.ltoa-activity-head h2{font-size:21px;margin:0;letter-spacing:-.02em}.ltoa-work-head p,.ltoa-activity-head p{font-size:12px;color:#748091;margin:4px 0 0}.ltoa-work-total{text-align:right}.ltoa-work-total strong{font-size:31px;line-height:1}.ltoa-work-total span{display:block;font-size:10px;color:#7a8695;margin-top:4px}
+                        .ltoa-work-grid{display:grid;grid-template-columns:1.45fr .8fr .8fr;gap:10px}.ltoa-work-card{border:1px solid #e7ebf0;background:rgba(255,255,255,.9);border-radius:18px;padding:15px;min-height:126px}.ltoa-work-card.main{border-color:#dbe7ff;background:linear-gradient(180deg,#f8fbff,#fff)}.ltoa-work-card-head{display:flex;justify-content:space-between;gap:12px;align-items:flex-start}.ltoa-work-card-head span{font-size:12px;font-weight:700;color:#344054}.ltoa-work-card-head strong{font-size:26px;line-height:1}.ltoa-work-card p{font-size:10px;color:#7a8695;margin:4px 0 12px}.ltoa-work-statuses{display:flex;flex-wrap:wrap;gap:7px}.ltoa-work-status{display:flex;flex-direction:column;min-width:86px;background:#f7f9fc;border:1px solid #edf0f3;border-radius:12px;padding:8px}.ltoa-work-status b{font-size:14px}.ltoa-work-status small{font-size:9px;color:#748091;margin-top:2px;line-height:1.2}
+                        .ltoa-activity-head{margin:4px 0 12px}
+                        .ltoa-section{background:rgba(255,255,255,.94);border:1px solid #e4e8ed;border-radius:17px;margin-bottom:10px;overflow:hidden;box-shadow:0 8px 24px rgba(15,23,42,.025)}
+                        .ltoa-section>summary{list-style:none;cursor:pointer;display:grid;grid-template-columns:minmax(160px,1fr) auto 20px;align-items:center;gap:16px;padding:14px 16px;min-height:58px}.ltoa-section>summary::-webkit-details-marker{display:none}.ltoa-section-name{display:flex;align-items:center;gap:8px}.ltoa-section-name strong{font-size:14px}.ltoa-badge{background:#f0f3f6;border-radius:999px;padding:3px 8px;font-size:10px;color:#536170}.ltoa-section-summary{display:flex;justify-content:flex-end;gap:7px;flex-wrap:wrap}.ltoa-chevron{color:#98a2b3;transition:.18s}.ltoa-section[open] .ltoa-chevron{transform:rotate(180deg)}.ltoa-section[open]>summary{border-bottom:1px solid #edf0f3}.ltoa-section-body{padding:15px 16px 17px}
+                        .ltoa-metric-btn{border:1px solid #e5e9ee;background:#fff;border-radius:999px;padding:6px 9px;font-size:10px;color:#5b6674;cursor:pointer}.ltoa-metric-btn:hover{border-color:#cddbf6;background:#f7faff;color:#2456a6}.ltoa-metric-btn b{color:#111827;margin-right:3px}
+                        .ltoa-breakdown{background:#f8fafc;border:1px solid #edf0f3;border-radius:14px;padding:12px;margin-bottom:12px}.ltoa-breakdown-label{font-size:9px;color:#98a2b3;text-transform:uppercase;letter-spacing:.08em;margin-bottom:8px}.ltoa-breakdown-grid{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:8px}.ltoa-subtype-btn{border:1px solid #e7ebef;background:#fff;border-radius:12px;padding:10px;text-align:left;cursor:pointer}.ltoa-subtype-btn:hover{border-color:#cedcf7;box-shadow:0 7px 18px rgba(37,99,235,.06)}.ltoa-subtype-btn b{display:block;font-size:16px}.ltoa-subtype-btn span{display:block;font-size:10px;color:#475467;margin:2px 0 6px}.ltoa-subtype-btn small{font-size:9px;color:#2563eb}
+                        .ltoa-table-wrap{overflow:auto;border:1px solid #e5e9ee;border-radius:12px}.ltoa-table{width:100%;border-collapse:collapse;font-size:11px;background:#fff;min-width:820px}.ltoa-table th{background:#f8f9fb;text-align:left;font-weight:700;color:#687584;padding:9px 10px;border-bottom:1px solid #e7ebef;white-space:nowrap;text-transform:uppercase;font-size:9px;letter-spacing:.04em}.ltoa-table td{padding:10px;border-bottom:1px solid #eef1f3;vertical-align:top}.ltoa-table tr:last-child td{border-bottom:0}.ltoa-time,.ltoa-ref{white-space:nowrap;color:#6d7986}.ltoa-client{font-weight:700}.ltoa-tag{display:inline-block;border-radius:999px;padding:3px 7px;font-size:9px;font-weight:700}.ltoa-creation{background:#eaf7ef;color:#267344}.ltoa-update{background:#eef3ff;color:#315ea8}.ltoa-deletion{background:#fff0ef;color:#ae3b32}
+                        .ltoa-row-card{border-bottom:1px solid #edf0f2;padding:11px 0}.ltoa-row-card:first-child{padding-top:0}.ltoa-row-card:last-child{border-bottom:0;padding-bottom:0}.ltoa-row-main{display:flex;gap:8px;align-items:baseline;flex-wrap:wrap}.ltoa-row-main strong{font-size:12px}.ltoa-row-main span{font-size:10px;color:#6e7a87}.ltoa-row-meta{font-size:10px;color:#89939d;margin-top:3px}.ltoa-note-text{margin-top:7px;background:#f7f8fa;border-radius:7px;padding:9px 10px;white-space:pre-wrap;line-height:1.45;font-size:11px;color:#3e4954}.ltoa-empty,.ltoa-muted{font-size:11px;color:#8a949e}
+                        .ltoa-detail-backdrop{display:none;position:fixed;inset:0;z-index:2147483647;background:rgba(15,23,42,.28);backdrop-filter:blur(6px);align-items:center;justify-content:center;padding:24px}.ltoa-detail-backdrop.show{display:flex}.ltoa-detail-card{width:min(1080px,96vw);max-height:84vh;overflow:auto;background:#fff;border-radius:22px;padding:18px;box-shadow:0 30px 90px rgba(15,23,42,.22)}.ltoa-detail-head{display:flex;align-items:center;justify-content:space-between;gap:14px;margin-bottom:14px}.ltoa-detail-head h3{margin:0;font-size:18px}.ltoa-detail-close{border:0;background:#f1f4f7;border-radius:999px;width:34px;height:34px;cursor:pointer;font-size:18px}
+                        @media(max-width:1050px){.ltoa-shell{grid-template-columns:1fr}.ltoa-sidebar{display:none}.ltoa-work-grid{grid-template-columns:1fr}.ltoa-breakdown-grid{grid-template-columns:1fr 1fr}.ltoa-main{padding:16px}.ltoa-topbar{padding:12px 16px}.ltoa-section-summary{justify-content:flex-start}.ltoa-section>summary{grid-template-columns:1fr 20px}.ltoa-section-summary{display:none}}
                     </style>
-
+        
                     <div class="ltoa-shell">
-                        <header class="ltoa-topbar">
-                            <div class="ltoa-title">
-                                <h1>Rapport d’activité</h1>
-                                <span>${Utils.escapeHtml(user || '')} · ${Utils.escapeHtml(date || '')}${isPastDate ? ' · rétrospectif' : ''}</span>
+                        <aside class="ltoa-sidebar">
+                            <div class="ltoa-brand">
+                                <div class="ltoa-logo">M</div>
+                                <div><strong>Modulr</strong><small>Rapport d’activité</small></div>
                             </div>
-                            <div class="ltoa-actions">
-                                <button id="ltoa-view-by-client" class="ltoa-btn">Par client</button>
-                                <button id="ltoa-view-chrono" class="ltoa-btn">Chronologie</button>
-                                <button id="ltoa-export-html" class="ltoa-btn">Exporter</button>
-                                <button id="ltoa-close-report" class="ltoa-btn ltoa-close">×</button>
-                            </div>
-                        </header>
-
-                        <main class="ltoa-main">
-                            ${notes ? `<div class="ltoa-note"><strong>Note</strong><br>${clean(notes)}</div>` : ''}
-                            ${aircallStatus?.state === 'error' ? `<div class="ltoa-warning">${Utils.escapeHtml(aircallStatus.message || 'Erreur Aircall')}</div>` : ''}
-
-                            <div class="ltoa-summary">
-                                <div class="ltoa-kpi"><strong>${emailsSent.length}</strong><span>emails envoyés</span></div>
-                                <div class="ltoa-kpi"><strong>${aircallCalls.length}</strong><span>appels</span></div>
-                                <div class="ltoa-kpi"><strong>${tasksCompleted.length}</strong><span>tâches terminées</span></div>
-                                <div class="ltoa-kpi"><strong>${estimates.length}</strong><span>actions devis</span></div>
-                                <div class="ltoa-kpi"><strong>${policies.length}</strong><span>actions contrats</span></div>
-                                <div class="ltoa-kpi"><strong>${(pendingEmailsCount || 0) + tasksOverdue.length}</strong><span>éléments en attente / retard</span></div>
-                            </div>
-
-                            ${section(
-                                'estimates',
-                                'Devis',
-                                estimates.length,
-                                `${formatCountLine(estimateCounts)}${assignedEstimates.total ? ` · ${assignedEstimates.total} assignés` : ''}`,
-                                `
-                                    ${renderAssigned()}
-                                    ${estimateSubtypeLine ? `<div class="ltoa-subtypes"><strong>Détail des modifications :</strong> ${Utils.escapeHtml(estimateSubtypeLine)}</div>` : ''}
-                                    ${table(['Date','Type','Client','Devis','Détail'], renderLogRows(estimates, 'Devis'), 'Aucune action sur les devis')}
-                                `
-                            )}
-
-                            ${section(
-                                'policies',
-                                'Contrats',
-                                policies.length,
-                                formatCountLine(policyCounts),
-                                `
-                                    ${policySubtypeLine ? `<div class="ltoa-subtypes"><strong>Détail des modifications :</strong> ${Utils.escapeHtml(policySubtypeLine)}</div>` : ''}
-                                    ${table(['Date','Type','Client','Contrat','Détail'], renderLogRows(policies, 'Contrat'), 'Aucune action sur les contrats')}
-                                `
-                            )}
-
-                            ${section(
-                                'tasks',
-                                'Tâches',
-                                tasksCompleted.length + tasksOverdue.length,
-                                `${tasksCompleted.length} terminées · ${tasksOverdue.length} en retard`,
-                                `
-                                    <div class="ltoa-two-col">
-                                        <div><div class="ltoa-col-title">Terminées aujourd’hui</div>${tasksCompleted.length ? renderTaskCards(tasksCompleted) : '<div class="ltoa-empty">Aucune tâche terminée</div>'}</div>
-                                        <div><div class="ltoa-col-title">En retard</div>${tasksOverdue.length ? renderTaskCards(tasksOverdue, true) : '<div class="ltoa-empty">Aucune tâche en retard</div>'}</div>
+                            <nav class="ltoa-nav">
+                                <div class="ltoa-nav-label">Navigation</div>
+                                <button type="button" class="ltoa-nav-btn active" data-target="top">Vue générale</button>
+                                <button type="button" class="ltoa-nav-btn" data-target="estimates">Devis</button>
+                                <button type="button" class="ltoa-nav-btn" data-target="policies">Contrats</button>
+                                <button type="button" class="ltoa-nav-btn" data-target="tasks">Tâches</button>
+                                <button type="button" class="ltoa-nav-btn" data-target="emails">Emails</button>
+                                <button type="button" class="ltoa-nav-btn" data-target="claims">Sinistres</button>
+                            </nav>
+                        </aside>
+        
+                        <div class="ltoa-content">
+                            <header class="ltoa-topbar" id="ltoa-report-top">
+                                <div class="ltoa-title">
+                                    <h1>Rapport d’activité</h1>
+                                    <span>${Utils.escapeHtml(date || '')}${isPastDate ? ' · rétrospectif' : ''}</span>
+                                </div>
+                                <div class="ltoa-actions">
+                                    <span class="ltoa-user-pill">${Utils.escapeHtml(user || '')}</span>
+                                    <button id="ltoa-view-by-client" class="ltoa-btn">Par client</button>
+                                    <button id="ltoa-view-chrono" class="ltoa-btn">Chronologie</button>
+                                    <button id="ltoa-export-html" class="ltoa-btn">Exporter</button>
+                                    <button id="ltoa-close-report" class="ltoa-btn ltoa-close">×</button>
+                                </div>
+                            </header>
+        
+                            <main class="ltoa-main">
+                                ${aircallStatus?.state === 'error' ? `<div class="ltoa-warning">${Utils.escapeHtml(aircallStatus.message || 'Erreur Aircall')}</div>` : ''}
+        
+                                <section class="ltoa-workload">
+                                    <div class="ltoa-work-head">
+                                        <div>
+                                            <div class="ltoa-kicker">Travail à faire</div>
+                                            <h2>Charge actuelle</h2>
+                                            <p>Les éléments actuellement affectés à ${Utils.escapeHtml(user || 'ce collaborateur')} et encore à traiter.</p>
+                                        </div>
+                                        <div class="ltoa-work-total"><strong>${totalPending}</strong><span>éléments à traiter</span></div>
                                     </div>
-                                `,
-                                tasksOverdue.length > 0
-                            )}
-
-                            ${section(
-                                'emails',
-                                'Emails',
-                                emailsSent.length + emailsAffected.length,
-                                `${emailsSent.length} envoyés · ${emailsAffected.length} affectés · ${pendingEmailsCount || 0} en attente`,
-                                `
-                                    <div class="ltoa-two-col">
-                                        <div><div class="ltoa-col-title">Envoyés</div>${table(['Heure','Client / destinataire','Objet'], emailRows, 'Aucun email envoyé')}</div>
-                                        <div><div class="ltoa-col-title">Affectés / reçus</div>${table(['Heure','Client / expéditeur','Objet'], affectedRows, 'Aucun email affecté')}</div>
+                                    <div class="ltoa-work-grid">
+                                        <div class="ltoa-work-card main">
+                                            <div class="ltoa-work-card-head"><span>Devis à traiter</span><strong>${assignedEstimates.total || 0}</strong></div>
+                                            <p>Devis actuellement assignés</p>
+                                            <div class="ltoa-work-statuses">${assignedStatuses || '<span class="ltoa-muted">Aucun devis assigné</span>'}</div>
+                                        </div>
+                                        <div class="ltoa-work-card">
+                                            <div class="ltoa-work-card-head"><span>Emails à traiter</span><strong>${pendingEmailsCount || 0}</strong></div>
+                                            <p>Emails affectés toujours en attente de traitement</p>
+                                        </div>
+                                        <div class="ltoa-work-card">
+                                            <div class="ltoa-work-card-head"><span>Tâches à traiter</span><strong>${pendingTasks.length}</strong></div>
+                                            <p>Tâches ouvertes affectées au collaborateur</p>
+                                            <div class="ltoa-work-statuses">
+                                                <span class="ltoa-work-status"><b>${normalPendingTasks}</b><small>À faire</small></span>
+                                                <span class="ltoa-work-status"><b>${overduePendingTasks}</b><small>En retard</small></span>
+                                            </div>
+                                        </div>
                                     </div>
-                                `
-                            )}
-
-                            ${section(
-                                'calls',
-                                'Appels',
-                                aircallCalls.length,
-                                `${aircallCalls.filter(c => c.type === 'entrant').length} entrants · ${aircallCalls.filter(c => c.type === 'sortant').length} sortants`,
-                                table(['Heure','Sens','Contact','Durée'], callRows, 'Aucun appel')
-                            )}
-
-                            ${section(
-                                'claims',
-                                'Sinistres',
-                                claims.length,
-                                formatCountLine(claimCounts),
-                                `
-                                    ${claimSubtypeLine ? `<div class="ltoa-subtypes"><strong>Détail des modifications :</strong> ${Utils.escapeHtml(claimSubtypeLine)}</div>` : ''}
-                                    ${table(['Date','Type','Client','Sinistre','Détail'], renderLogRows(claims, 'Sinistre'), 'Aucune action sur les sinistres')}
-                                `
-                            )}
-
-                            ${section(
-                                'other',
-                                'Autres actions',
-                                logs.length,
-                                logs.length ? 'Journalisation complémentaire' : 'Aucune',
-                                table(['Date','Rubrique','Élément','Détail'], otherRows, 'Aucune autre action utile')
-                            )}
-                        </main>
+                                </section>
+        
+                                <div class="ltoa-activity-head">
+                                    <div class="ltoa-kicker">Travail effectué</div>
+                                    <h2>Activité du jour</h2>
+                                    <p>Tous les modules sont repliés. Cliquez sur un volume pour afficher uniquement les dossiers correspondants.</p>
+                                </div>
+        
+                                ${section(
+                                    'estimates',
+                                    'Devis',
+                                    estimates.length,
+                                    renderMetricButtons('estimates', estimateCounts, estimates.length, 'Devis'),
+                                    `
+                                        ${renderSubtypeButtons('estimates', estimateCounts, 'Devis')}
+                                        ${table(['Date','Action','Client','Produit / type','Référence','Détail'], renderLogRows(estimates, 'Devis'), 'Aucune action sur les devis')}
+                                    `
+                                )}
+        
+                                ${section(
+                                    'policies',
+                                    'Contrats',
+                                    policies.length,
+                                    renderMetricButtons('policies', policyCounts, policies.length, 'Contrats'),
+                                    `
+                                        ${renderSubtypeButtons('policies', policyCounts, 'Contrats')}
+                                        ${table(['Date','Action','Client','Produit / type','Référence','Détail'], renderLogRows(policies, 'Contrat'), 'Aucune action sur les contrats')}
+                                    `
+                                )}
+        
+                                ${section(
+                                    'emails',
+                                    'Emails',
+                                    emailsSent.length + emailsAffected.length,
+                                    emailSummary,
+                                    table(['Heure','Action','Client / interlocuteur','Référence','Objet'], emailRows, 'Aucune activité email')
+                                )}
+        
+                                ${section(
+                                    'tasks',
+                                    'Tâches',
+                                    tasksCompleted.length,
+                                    `<span class="ltoa-metric-btn" style="cursor:default"><b>${tasksCompleted.length}</b> terminées</span>`,
+                                    tasksCompleted.length ? renderTaskCards(tasksCompleted) : '<div class="ltoa-empty">Aucune tâche terminée aujourd’hui</div>'
+                                )}
+        
+                                ${section(
+                                    'calls',
+                                    'Appels',
+                                    aircallCalls.length,
+                                    callSummary,
+                                    table(['Heure','Sens','Contact','Durée','Résumé'], callRows, 'Aucun appel')
+                                )}
+        
+                                ${section(
+                                    'claims',
+                                    'Sinistres',
+                                    claims.length,
+                                    renderMetricButtons('claims', claimCounts, claims.length, 'Sinistres'),
+                                    `
+                                        ${renderSubtypeButtons('claims', claimCounts, 'Sinistres')}
+                                        ${table(['Date','Action','Client','Produit / type','Référence','Détail'], renderLogRows(claims, 'Sinistre'), 'Aucune action sur les sinistres')}
+                                    `
+                                )}
+        
+                                ${logs.length ? section(
+                                    'other',
+                                    'Autres actions',
+                                    logs.length,
+                                    `<span class="ltoa-muted">${logs.length} action${logs.length > 1 ? 's' : ''} complémentaire${logs.length > 1 ? 's' : ''}</span>`,
+                                    table(['Date','Rubrique','Élément','Détail'], otherRows, 'Aucune autre action utile')
+                                ) : ''}
+                            </main>
+                        </div>
+                    </div>
+        
+                    <div class="ltoa-detail-backdrop" id="ltoa-detail-backdrop">
+                        <div class="ltoa-detail-card">
+                            <div class="ltoa-detail-head">
+                                <h3 id="ltoa-detail-title">Détail</h3>
+                                <button type="button" class="ltoa-detail-close" id="ltoa-detail-close">×</button>
+                            </div>
+                            <div id="ltoa-detail-content"></div>
+                        </div>
                     </div>
                 </div>`;
         },
@@ -2944,23 +3058,83 @@
         show() {
             const existing = document.getElementById('ltoa-report-modal');
             if (existing) existing.remove();
-
+        
             document.body.insertAdjacentHTML('beforeend', this.generateHTML());
-
-            document.getElementById('ltoa-close-report').addEventListener('click', () => {
-                document.getElementById('ltoa-report-modal').remove();
-            });
-
+            const modal = document.getElementById('ltoa-report-modal');
+            const detailBackdrop = document.getElementById('ltoa-detail-backdrop');
+            const detailTitle = document.getElementById('ltoa-detail-title');
+            const detailContent = document.getElementById('ltoa-detail-content');
+        
+            document.getElementById('ltoa-close-report').addEventListener('click', () => modal.remove());
             document.getElementById('ltoa-view-by-client').addEventListener('click', () => this.showByClientView());
             document.getElementById('ltoa-export-html').addEventListener('click', () => this.exportHTML());
             document.getElementById('ltoa-view-chrono').addEventListener('click', () => this.showChronoView());
-
-            document.addEventListener('keydown', (e) => {
-                if (e.key === 'Escape') {
-                    const modal = document.getElementById('ltoa-report-modal');
-                    if (modal) modal.remove();
-                }
+        
+            const closeDetail = () => detailBackdrop.classList.remove('show');
+            document.getElementById('ltoa-detail-close').addEventListener('click', closeDetail);
+            detailBackdrop.addEventListener('click', event => {
+                if (event.target === detailBackdrop) closeDetail();
             });
+        
+            const openMetricDetail = button => {
+                const sectionId = button.dataset.section;
+                const kind = button.dataset.kind || '';
+                const subtype = button.dataset.subtype || '';
+                const sectionEl = document.getElementById(`ltoa-section-${sectionId}`);
+                const sourceTable = sectionEl?.querySelector('.ltoa-table');
+                if (!sourceTable) return;
+        
+                const clone = sourceTable.cloneNode(true);
+                const rows = Array.from(clone.querySelectorAll('tbody tr'));
+                rows.forEach(row => {
+                    const matchesKind = !kind || row.dataset.kind === kind;
+                    const matchesSubtype = !subtype || row.dataset.subtype === subtype;
+                    if (!matchesKind || !matchesSubtype) row.remove();
+                });
+        
+                detailTitle.textContent = button.dataset.detailTitle || 'Détail';
+                detailContent.innerHTML = '';
+                const wrap = document.createElement('div');
+                wrap.className = 'ltoa-table-wrap';
+                wrap.appendChild(clone);
+                detailContent.appendChild(wrap);
+                detailBackdrop.classList.add('show');
+            };
+        
+            modal.querySelectorAll('.ltoa-metric-btn[data-section], .ltoa-subtype-btn[data-section]').forEach(button => {
+                button.addEventListener('click', event => {
+                    event.preventDefault();
+                    event.stopPropagation();
+                    openMetricDetail(button);
+                });
+            });
+        
+            modal.querySelectorAll('.ltoa-nav-btn').forEach(button => {
+                button.addEventListener('click', () => {
+                    modal.querySelectorAll('.ltoa-nav-btn').forEach(item => item.classList.remove('active'));
+                    button.classList.add('active');
+                    const target = button.dataset.target;
+                    if (target === 'top') {
+                        document.getElementById('ltoa-report-top')?.scrollIntoView({behavior:'smooth', block:'start'});
+                        return;
+                    }
+                    const sectionEl = document.getElementById(`ltoa-section-${target}`);
+                    if (sectionEl) {
+                        sectionEl.scrollIntoView({behavior:'smooth', block:'start'});
+                    }
+                });
+            });
+        
+            document.addEventListener('keydown', event => {
+                if (event.key === 'Escape') {
+                    if (detailBackdrop?.classList.contains('show')) {
+                        closeDetail();
+                    } else {
+                        const current = document.getElementById('ltoa-report-modal');
+                        if (current) current.remove();
+                    }
+                }
+            }, { once: false });
         },
 
         // ============================================
@@ -3412,7 +3586,7 @@
 
                         <!-- Footer -->
                         <div style="text-align: center; color: #999; padding-top: 15px; font-size: 12px;">
-                            📊 Vue par Client - LTOA Modulr Script v4.7
+                            📊 Vue par Client - LTOA Modulr Script v5.4.0
                         </div>
                     </div>
                 </div>
@@ -4346,7 +4520,7 @@
 
         <!-- Footer -->
         <div class="footer">
-            <p>Rapport généré le ${new Date().toLocaleString('fr-FR')} par LTOA Modulr Script v4.7</p>
+            <p>Rapport généré le ${new Date().toLocaleString('fr-FR')} par LTOA Modulr Script v5.4.0</p>
         </div>
     </div>
 
@@ -4360,7 +4534,7 @@
             ${this.generateChronoViewHTML()}
         </div>
         <div class="footer">
-            <p>Rapport généré le ${new Date().toLocaleString('fr-FR')} par LTOA Modulr Script v4.7</p>
+            <p>Rapport généré le ${new Date().toLocaleString('fr-FR')} par LTOA Modulr Script v5.4.0</p>
         </div>
     </div>
 
@@ -4374,7 +4548,7 @@
             ${this.generateClientViewHTML()}
         </div>
         <div class="footer">
-            <p>Rapport généré le ${new Date().toLocaleString('fr-FR')} par LTOA Modulr Script v4.7</p>
+            <p>Rapport généré le ${new Date().toLocaleString('fr-FR')} par LTOA Modulr Script v5.4.0</p>
         </div>
     </div>
 
@@ -5147,6 +5321,10 @@
             const pendingEmailsCount = await PendingEmailsCollector.collect(connectedUser, loader.updateStatus);
             await Utils.delay(CONFIG.DELAY_BETWEEN_REQUESTS);
 
+            // Charge actuelle : toutes les tâches ouvertes affectées au collaborateur
+            const pendingTasks = await PendingTasksCollector.collect(userId, connectedUser, loader.updateStatus);
+            await Utils.delay(CONFIG.DELAY_BETWEEN_REQUESTS);
+
             // Charge actuelle en devis depuis le tableau de bord
             const assignedEstimates = await EstimatesAssignmentCollector.collect(userId, loader.updateStatus);
             await Utils.delay(CONFIG.DELAY_BETWEEN_REQUESTS);
@@ -5219,6 +5397,7 @@
                 aircallCalls: aircallCalls, // Ajouter les appels Aircall
                 tasksCompleted: resolvedData.tasksCompleted,
                 tasksOverdue: resolvedData.tasksOverdue,
+                pendingTasks: pendingTasks,
                 logs: resolvedData.logs,
                 estimates: resolvedData.estimates,
                 policies: resolvedData.policies,
@@ -5363,16 +5542,6 @@
                                     <small style="color: #888;">${formatDate(twoDaysAgo)}</small>
                                 </button>
                             </div>
-                        </div>
-
-                        <div style="margin-bottom: 20px;">
-                            <label for="ltoa-report-notes" style="display:block;margin-bottom:8px;color:#666;font-size:13px;">
-                                Notes ou précisions complémentaires (facultatif) :
-                            </label>
-                            <textarea id="ltoa-report-notes" rows="4" placeholder="Ex. rendez-vous extérieur, travail de fond, incident technique, précision sur un dossier…" style="
-                                width:100%;padding:12px;border:2px solid #e0e0e0;border-radius:8px;
-                                font-size:14px;box-sizing:border-box;resize:vertical;font-family:inherit;
-                            ">${Utils.escapeHtml(REPORT_NOTES)}</textarea>
                         </div>
 
                         <div style="margin-bottom:20px;padding:12px 14px;background:#f5f7fa;border:1px solid #e0e0e0;border-radius:8px;">
