@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         LTOA Modulr - Rapport Quotidien
 // @namespace    https://github.com/BiggerThanTheMall/tampermonkey-ltoa
-// @version      5.6.3
+// @version      5.6.4
 // @description  Génération automatique du rapport d’activité quotidien dans Modulr
 // @author       LTOA Assurances
 // @match        https://courtage.modulr.fr/*
@@ -225,10 +225,19 @@
             // Statuts devis
             'current': 'En cours',
             'pricing': 'En tarification',
-            'delivered': 'Transmis au client',
+            'delivered': 'Remis',
+            'pending_parts': 'Attente pièces',
+            'pending_approval': 'Attente approbation',
+            'deferred': 'Différé',
+            'lost': 'Perdu',
+            'transformed': 'Transformé',
+            'subscription': 'En souscription',
+            'underwriting': 'En souscription',
+            'in_subscription': 'En souscription',
             'accepted': 'Accepté',
             'refused': 'Refusé',
             'expired': 'Expiré',
+            'canceled': 'Annulé',
             'cancelled': 'Annulé',
             'waiting': 'En attente',
             'validated': 'Validé',
@@ -705,7 +714,7 @@
             }
             // Décoder les entités HTML
             strValue = strValue.replace(/&#0*39;/g, "'").replace(/&#0*34;/g, '"').replace(/&amp;/g, '&');
-            return TRANSLATIONS.values[strValue] || strValue;
+            return TRANSLATIONS.values[strValue] || TRANSLATIONS.values[strValue.toLowerCase()] || strValue;
         },
 
         // Traduire un nom de table
@@ -3028,7 +3037,7 @@
                         .ltoa-work-head{display:flex;justify-content:space-between;align-items:flex-end;gap:20px;margin-bottom:16px}.ltoa-kicker{font-size:10px;color:#98a2b3;text-transform:uppercase;letter-spacing:.09em;margin-bottom:5px}.ltoa-work-head h2,.ltoa-activity-head h2{font-size:21px;margin:0;letter-spacing:-.02em}.ltoa-work-head p,.ltoa-activity-head p{font-size:12px;color:#748091;margin:4px 0 0}.ltoa-work-total{text-align:right}.ltoa-work-total strong{font-size:31px;line-height:1}.ltoa-work-total span{display:block;font-size:10px;color:#7a8695;margin-top:4px}
                         .ltoa-work-grid{display:grid;grid-template-columns:1.45fr .8fr .8fr;gap:10px}.ltoa-work-card{border:1px solid #e7ebf0;background:rgba(255,255,255,.9);border-radius:18px;padding:15px;min-height:126px}.ltoa-work-card.main{border-color:#dbe7ff;background:linear-gradient(180deg,#f8fbff,#fff)}.ltoa-work-card-head{display:flex;justify-content:space-between;gap:12px;align-items:flex-start}.ltoa-work-card-head span{font-size:12px;font-weight:700;color:#344054}.ltoa-work-card-head strong{font-size:26px;line-height:1}.ltoa-work-card p{font-size:10px;color:#7a8695;margin:4px 0 12px}.ltoa-work-statuses{display:flex;flex-wrap:wrap;gap:7px}.ltoa-work-status{display:flex;flex-direction:column;min-width:86px;background:#f7f9fc;border:1px solid #edf0f3;border-radius:12px;padding:8px}.ltoa-work-status b{font-size:14px}.ltoa-work-status small{font-size:9px;color:#748091;margin-top:2px;line-height:1.2}
                         .ltoa-activity-head{margin:4px 0 12px}
-                        .ltoa-section{background:transparent;border:0;border-bottom:1px solid #dfe4ea;border-radius:0;margin:0;overflow:visible;box-shadow:none}
+                        .ltoa-section{background:rgba(255,255,255,.78);border:1px solid #dfe4ea;border-radius:8px;margin-bottom:8px;overflow:hidden;box-shadow:none}
                         .ltoa-section{--accent:#64748b;--accent-soft:#f1f5f9}.ltoa-section-estimates{--accent:#2563eb;--accent-soft:#eff6ff}.ltoa-section-policies{--accent:#7c3aed;--accent-soft:#f5f3ff}.ltoa-section-emails{--accent:#0891b2;--accent-soft:#ecfeff}.ltoa-section-tasks{--accent:#d97706;--accent-soft:#fffbeb}.ltoa-section-calls{--accent:#ea580c;--accent-soft:#fff7ed}.ltoa-section-claims{--accent:#dc2626;--accent-soft:#fef2f2}.ltoa-section-other{--accent:#475569;--accent-soft:#f8fafc}
                         .ltoa-section>summary{border-left:0}.ltoa-section-name strong{color:var(--accent)}.ltoa-section .ltoa-badge{background:transparent;color:var(--accent);padding:0;font-weight:700}.ltoa-section .ltoa-metric-btn{border-color:#e2e7ec;background:transparent;color:#667085}.ltoa-section .ltoa-metric-btn b{color:var(--accent)}
                         .ltoa-estimate-status.is-current{background:#eff6ff;border-color:#bfdbfe}.ltoa-estimate-status.is-current b{color:#1d4ed8}.ltoa-estimate-status.is-pricing{background:#f5f3ff;border-color:#ddd6fe}.ltoa-estimate-status.is-pricing b{color:#7c3aed}.ltoa-estimate-status.is-delivered{background:#ecfeff;border-color:#a5f3fc}.ltoa-estimate-status.is-delivered b{color:#0e7490}.ltoa-estimate-status.is-waiting-docs{background:#fffbeb;border-color:#fde68a}.ltoa-estimate-status.is-waiting-docs b{color:#b45309}.ltoa-estimate-status.is-waiting-approval{background:#fff7ed;border-color:#fed7aa}.ltoa-estimate-status.is-waiting-approval b{color:#c2410c}.ltoa-estimate-status.is-deferred{background:#f8fafc;border-color:#cbd5e1}.ltoa-estimate-status.is-deferred b{color:#475569}.ltoa-estimate-status.is-lost{background:#fef2f2;border-color:#fecaca}.ltoa-estimate-status.is-lost b{color:#b91c1c}.ltoa-estimate-status.is-transformed{background:#f0fdf4;border-color:#bbf7d0}.ltoa-estimate-status.is-transformed b{color:#15803d}.ltoa-estimate-status.is-subscription{background:#eef2ff;border-color:#c7d2fe}.ltoa-estimate-status.is-subscription b{color:#4338ca}
@@ -3036,7 +3045,7 @@
                         .ltoa-inline-filters{display:flex;align-items:center;gap:7px;flex-wrap:wrap;margin-bottom:11px}.ltoa-inline-filter-label{font-size:9px;color:#98a2b3;text-transform:uppercase;letter-spacing:.07em;margin-right:2px}.ltoa-inline-filter{border:1px solid #e5e9ef;background:#fff;border-radius:999px;padding:6px 10px;font-size:11px;color:#596579;cursor:pointer}.ltoa-inline-filter b{margin-left:3px}.ltoa-inline-filter.active{background:var(--accent-soft);border-color:var(--accent);color:var(--accent)}
                         .ltoa-call-list{display:block}.ltoa-call-card{border:0;border-bottom:1px solid #e7ebef;background:transparent;border-radius:0;padding:14px 0}.ltoa-call-card:first-child{padding-top:2px}.ltoa-call-card:last-child{border-bottom:0;padding-bottom:2px}.ltoa-call-card.ltoa-call-inbound,.ltoa-call-card.ltoa-call-outbound{border-left:0}.ltoa-call-top{display:flex;align-items:flex-start;justify-content:space-between;gap:14px}.ltoa-call-title{display:flex;align-items:center;gap:8px;flex-wrap:wrap}.ltoa-call-title strong{font-size:14px}.ltoa-call-direction{font-size:11px;font-weight:800;padding:0;background:transparent;color:#475569}.ltoa-call-inbound .ltoa-call-direction{background:transparent;color:#15803d}.ltoa-call-outbound .ltoa-call-direction{background:transparent;color:#1d4ed8}.ltoa-call-meta{font-size:11px;color:#7a8695;margin-top:4px}.ltoa-call-quality{display:flex;align-items:center;gap:6px;border:0;border-radius:0;padding:0;background:transparent;min-width:0}.ltoa-call-quality>span{font-size:18px}.ltoa-call-quality small{display:block;font-size:8px;text-transform:uppercase;color:#98a2b3;letter-spacing:.04em}.ltoa-call-quality strong{display:block;font-size:11px}.ltoa-call-quality.positive,.ltoa-call-quality.negative,.ltoa-call-quality.missed,.ltoa-call-quality.neutral,.ltoa-call-quality.answered{background:transparent;border-color:transparent}.ltoa-call-summary,.ltoa-call-detail-block{margin-top:9px;background:transparent;border-radius:0;padding:0;font-size:12px;line-height:1.5;color:#475569}.ltoa-call-summary b,.ltoa-call-detail-block>b{display:block;font-size:9px;text-transform:uppercase;letter-spacing:.05em;color:#7a8695;margin-bottom:4px}.ltoa-call-pills{display:flex;flex-wrap:wrap;gap:5px}.ltoa-call-pills span{background:transparent;border:0;border-right:1px solid #dfe4ea;border-radius:0;padding:0 8px 0 0;margin-right:2px;font-size:11px}.ltoa-call-pills span:last-child{border-right:0}.ltoa-call-actions div{margin-top:2px}.ltoa-call-transcript{margin-top:9px;border-top:1px solid #edf0f3;padding-top:8px}.ltoa-call-transcript summary{cursor:pointer;color:#c2410c;font-size:10px;font-weight:700}.ltoa-call-transcript div{white-space:pre-wrap;background:transparent;border-left:2px solid #dfe4ea;border-radius:0;padding:4px 0 4px 10px;margin-top:7px;font-size:12px;line-height:1.55;color:#445160}
 
-                        .ltoa-section>summary{list-style:none;cursor:pointer;display:grid;grid-template-columns:minmax(160px,1fr) auto 20px;align-items:center;gap:16px;padding:16px 2px;min-height:58px}.ltoa-section>summary::-webkit-details-marker{display:none}.ltoa-section-name{display:flex;align-items:center;gap:8px}.ltoa-section-name strong{font-size:15px}.ltoa-badge{background:#f0f3f6;border-radius:999px;padding:3px 8px;font-size:10px;color:#536170}.ltoa-section-summary{display:flex;justify-content:flex-end;gap:8px;flex-wrap:wrap}.ltoa-chevron{color:#98a2b3;transition:.18s}.ltoa-section[open] .ltoa-chevron{transform:rotate(180deg)}.ltoa-section[open]>summary{border-bottom:1px solid #edf0f3}.ltoa-section-body{padding:15px 0 20px}
+                        .ltoa-section>summary{list-style:none;cursor:pointer;display:grid;grid-template-columns:minmax(160px,1fr) auto 20px;align-items:center;gap:16px;padding:15px 14px;min-height:58px}.ltoa-section>summary::-webkit-details-marker{display:none}.ltoa-section-name{display:flex;align-items:center;gap:8px}.ltoa-section-name strong{font-size:15px}.ltoa-badge{background:#f0f3f6;border-radius:999px;padding:3px 8px;font-size:10px;color:#536170}.ltoa-section-summary{display:flex;justify-content:flex-end;gap:8px;flex-wrap:wrap}.ltoa-chevron{color:#98a2b3;transition:.18s}.ltoa-section[open] .ltoa-chevron{transform:rotate(180deg)}.ltoa-section[open]>summary{border-bottom:1px solid #edf0f3}.ltoa-section-body{padding:15px 14px 18px}
                         .ltoa-metric-btn{border:1px solid #e5e9ee;background:#fff;border-radius:999px;padding:6px 10px;font-size:11px;color:#5b6674;cursor:pointer}.ltoa-metric-btn:hover{border-color:#cddbf6;background:#f7faff;color:#2456a6}.ltoa-metric-btn b{color:#111827;margin-right:3px}
                         .ltoa-breakdown{background:transparent;border:0;border-top:1px solid #e7ebef;border-bottom:1px solid #e7ebef;border-radius:0;padding:10px 0;margin:10px 0 12px}.ltoa-breakdown-label{font-size:10px;color:#7a8695;text-transform:uppercase;letter-spacing:.06em;margin-bottom:7px}.ltoa-breakdown-grid{display:flex;flex-wrap:wrap;gap:6px}.ltoa-subtype-btn{border:0;border-right:1px solid #e7ebef;background:transparent;border-radius:0;padding:3px 12px 3px 0;margin-right:6px;text-align:left;cursor:pointer;min-width:0}.ltoa-subtype-btn:last-child{border-right:0}.ltoa-subtype-btn:hover{color:var(--accent)}.ltoa-subtype-btn b{display:inline;font-size:13px;margin-right:5px}.ltoa-subtype-btn span{display:inline;font-size:11px;color:#475467;margin:0}.ltoa-subtype-btn small{display:block;font-size:9px;color:#8a94a3;margin-top:2px}
                         .ltoa-table-wrap{overflow:auto;border:1px solid #e5e9ee;border-radius:6px}.ltoa-table{width:100%;border-collapse:collapse;font-size:12px;background:#fff;min-width:760px}.ltoa-table th{background:#f8f9fb;text-align:left;font-weight:700;color:#687584;padding:10px 11px;border-bottom:1px solid #e7ebef;white-space:nowrap;text-transform:uppercase;font-size:10px;letter-spacing:.035em}.ltoa-table td{padding:11px;border-bottom:1px solid #eef1f3;vertical-align:top}.ltoa-table tr:last-child td{border-bottom:0}.ltoa-time{white-space:nowrap;color:#6d7986}.ltoa-client{font-weight:700}.ltoa-contract-type{font-weight:650;color:#344054}.ltoa-tag{display:inline-block;border-radius:999px;padding:3px 7px;font-size:9px;font-weight:700}.ltoa-creation{background:#eaf7ef;color:#267344}.ltoa-update{background:#eef3ff;color:#315ea8}.ltoa-deletion{background:#fff0ef;color:#ae3b32}
@@ -3976,585 +3985,86 @@
 },
 
         exportHTML() {
-            const { emailsSent, emailsAffected, aircallCalls, pendingEmailsCount, tasksCompleted, tasksOverdue, logs, estimates, policies, claims, user, date, notes, aircallStatus } = this.data;
+            try {
+                const source = document.getElementById('ltoa-report-modal');
+                if (!source) {
+                    alert('Le rapport doit être ouvert avant de pouvoir être exporté.');
+                    return;
+                }
 
-            // Compteurs Aircall
-            const aircallInbound = (aircallCalls || []).filter(c => c.type === 'entrant').length;
-            const aircallOutbound = (aircallCalls || []).filter(c => c.type === 'sortant').length;
-            const aircallAnswered = (aircallCalls || []).filter(c => c.answered !== false && !c.missedReason).length;
-            const aircallTalkSeconds = (aircallCalls || []).reduce((sum, c) => sum + (Number(c.durationSeconds) || 0), 0);
-            const aircallDurationText = `${Math.floor(aircallTalkSeconds / 3600)}h ${Math.floor((aircallTalkSeconds % 3600) / 60)}min`;
-            const uniqueClients = new Set([
-                ...emailsSent, ...emailsAffected, ...tasksCompleted,
-                ...estimates, ...policies, ...claims, ...logs
-            ].map(item => item.clientId || item.clientName || item.entityId)
-              .filter(value => value && value !== 'N/A' && value !== 'Non associé')).size;
-            const remainingWork = (pendingEmailsCount || 0) + tasksOverdue.length;
+                // L'export reprend directement l'interface actuellement affichée.
+                // Cela évite d'avoir un ancien template HTML différent du rapport à l'écran.
+                const clone = source.cloneNode(true);
 
-            // Générer un HTML statique complet (pas besoin de JS)
-            const htmlContent = `<!DOCTYPE html>
+                // Supprimer les contrôles purement interactifs du rapport.
+                clone.querySelector('#ltoa-detail-backdrop')?.remove();
+                clone.querySelector('#ltoa-view-by-client')?.remove();
+                clone.querySelector('#ltoa-view-chrono')?.remove();
+                clone.querySelector('#ltoa-export-html')?.remove();
+                clone.querySelector('#ltoa-close-report')?.remove();
+
+                // Toutes les catégories sont dépliées dans le fichier exporté afin que
+                // les informations restent visibles même sans JavaScript.
+                clone.querySelectorAll('details').forEach(details => {
+                    details.setAttribute('open', '');
+                });
+
+                // Nettoyer les attributs interactifs inutiles.
+                clone.querySelectorAll('button').forEach(button => {
+                    if (button.classList.contains('ltoa-inline-filter') ||
+                        button.classList.contains('ltoa-metric-btn') ||
+                        button.classList.contains('ltoa-subtype-btn')) {
+                        button.setAttribute('disabled', '');
+                    }
+                });
+
+                const exportOverrides = document.createElement('style');
+                exportOverrides.textContent = `
+                    html,body{margin:0;padding:0;background:#f5f7fb!important}
+                    #ltoa-report-modal{
+                        position:static!important;
+                        inset:auto!important;
+                        min-height:100vh!important;
+                        overflow:visible!important;
+                        background:#f5f7fb!important;
+                    }
+                    .ltoa-topbar{position:static!important}
+                    .ltoa-main{max-width:1500px!important}
+                    .ltoa-chevron{display:none!important}
+                    button[disabled]{cursor:default!important;opacity:1!important}
+                    @media print{
+                        #ltoa-report-modal{background:#fff!important}
+                        .ltoa-topbar{position:static!important}
+                        .ltoa-section{break-inside:avoid}
+                    }
+                `;
+                clone.prepend(exportOverrides);
+
+                const htmlContent = `<!DOCTYPE html>
 <html lang="fr">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Rapport d'Activité - ${Utils.escapeHtml(user)} - ${date}</title>
-    <style>
-        * { box-sizing: border-box; margin: 0; padding: 0; }
-        body {
-            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
-            background: #f5f5f5;
-            padding: 20px;
-            line-height: 1.6;
-            color: #333;
-        }
-        .report-container {
-            max-width: 1000px;
-            margin: 0 auto;
-            background: white;
-            border-radius: 15px;
-            box-shadow: 0 4px 20px rgba(0,0,0,0.1);
-            overflow: hidden;
-        }
-        .header {
-            background: linear-gradient(135deg, #c62828 0%, #8e0000 100%);
-            color: white;
-            padding: 30px;
-            text-align: center;
-        }
-        .header h1 { font-size: 28px; margin-bottom: 10px; }
-        .header p { opacity: 0.9; font-size: 16px; }
-        .summary {
-            display: grid;
-            grid-template-columns: repeat(4, 1fr);
-            gap: 15px;
-            padding: 25px;
-            background: #fafafa;
-        }
-        .summary-card {
-            text-align: center;
-            padding: 20px 15px;
-            border-radius: 12px;
-            color: white;
-        }
-        .summary-card .number { font-size: 32px; font-weight: bold; }
-        .summary-card .label { font-size: 12px; margin-top: 5px; }
-        .bg-blue { background: linear-gradient(135deg, #1976d2, #0d47a1); }
-        .bg-green { background: linear-gradient(135deg, #388e3c, #1b5e20); }
-        .bg-orange { background: linear-gradient(135deg, #f57c00, #e65100); }
-        .bg-red { background: linear-gradient(135deg, #d32f2f, #b71c1c); }
-        .bg-cyan { background: linear-gradient(135deg, #0097a7, #006064); }
-        .bg-indigo { background: linear-gradient(135deg, #3f51b5, #1a237e); }
-        .bg-pink { background: linear-gradient(135deg, #c2185b, #880e4f); }
-        .bg-purple { background: linear-gradient(135deg, #7b1fa2, #4a148c); }
-
-        .section {
-            padding: 25px;
-            border-bottom: 1px solid #eee;
-        }
-        .section:last-child { border-bottom: none; }
-        .section-title {
-            font-size: 18px;
-            font-weight: bold;
-            margin-bottom: 20px;
-            padding-bottom: 10px;
-            border-bottom: 3px solid;
-            display: flex;
-            align-items: center;
-            gap: 10px;
-        }
-        .section-title.blue { color: #1976d2; border-color: #1976d2; }
-        .section-title.green { color: #388e3c; border-color: #388e3c; }
-        .section-title.orange { color: #f57c00; border-color: #f57c00; }
-        .section-title.red { color: #d32f2f; border-color: #d32f2f; }
-        .section-title.cyan { color: #0097a7; border-color: #0097a7; }
-        .section-title.indigo { color: #3f51b5; border-color: #3f51b5; }
-        .section-title.pink { color: #c2185b; border-color: #c2185b; }
-        .section-title.purple { color: #7b1fa2; border-color: #7b1fa2; }
-
-        table { width: 100%; border-collapse: collapse; font-size: 13px; }
-        th { background: #f5f5f5; padding: 12px 10px; text-align: left; font-weight: 600; border-bottom: 2px solid #ddd; }
-        td { padding: 10px; border-bottom: 1px solid #eee; vertical-align: top; }
-        tr:hover { background: #fafafa; }
-
-        .email-content, .task-content {
-            background: #f8f9fa;
-            padding: 10px;
-            border-radius: 5px;
-            margin-top: 8px;
-            font-size: 12px;
-            color: #555;
-            border-left: 3px solid #ddd;
-            max-height: 150px;
-            overflow-y: auto;
-        }
-
-        .badge {
-            display: inline-block;
-            padding: 3px 8px;
-            border-radius: 12px;
-            font-size: 11px;
-            font-weight: bold;
-        }
-        .badge-red { background: #ffebee; color: #c62828; }
-        .badge-green { background: #e8f5e9; color: #2e7d32; }
-        .badge-orange { background: #fff3e0; color: #e65100; }
-
-        .footer {
-            text-align: center;
-            padding: 20px;
-            background: #fafafa;
-            color: #999;
-            font-size: 12px;
-        }
-
-        a { color: #1976d2; text-decoration: none; }
-        a:hover { text-decoration: underline; }
-
-        .empty { color: #999; font-style: italic; text-align: center; padding: 30px; }
-
-        @media print {
-            body { background: white; padding: 0; }
-            .report-container { box-shadow: none; }
-            .section { page-break-inside: avoid; }
-        }
-        @media (max-width: 800px) {
-            .summary { grid-template-columns: repeat(2, 1fr); }
-        }
-    </style>
+    <title>Rapport d'activité - ${Utils.escapeHtml(this.data.user || '')} - ${Utils.escapeHtml(this.data.date || '')}</title>
 </head>
 <body>
-    <!-- Boutons de navigation -->
-    <div style="max-width: 1000px; margin: 0 auto 20px auto; display: flex; gap: 10px; justify-content: center; flex-wrap: wrap;">
-        <button onclick="showView('categories')" id="btn-categories" class="nav-btn active" style="
-            padding: 12px 25px;
-            background: linear-gradient(135deg, #c62828, #b71c1c);
-            color: white;
-            border: none;
-            border-radius: 8px;
-            font-size: 14px;
-            font-weight: bold;
-            cursor: pointer;
-            box-shadow: 0 3px 10px rgba(0,0,0,0.2);
-        ">📊 Vue Catégories</button>
-        <button onclick="showView('chrono')" id="btn-chrono" class="nav-btn" style="
-            padding: 12px 25px;
-            background: linear-gradient(135deg, #9c27b0, #7b1fa2);
-            color: white;
-            border: none;
-            border-radius: 8px;
-            font-size: 14px;
-            font-weight: bold;
-            cursor: pointer;
-            box-shadow: 0 3px 10px rgba(0,0,0,0.2);
-        ">🕐 Vue Chronologique</button>
-        <button onclick="showView('client')" id="btn-client" class="nav-btn" style="
-            padding: 12px 25px;
-            background: linear-gradient(135deg, #1565c0, #0d47a1);
-            color: white;
-            border: none;
-            border-radius: 8px;
-            font-size: 14px;
-            font-weight: bold;
-            cursor: pointer;
-            box-shadow: 0 3px 10px rgba(0,0,0,0.2);
-        ">👤 Vue par Client</button>
-        <button onclick="window.print()" style="
-            padding: 12px 25px;
-            background: linear-gradient(135deg, #666, #444);
-            color: white;
-            border: none;
-            border-radius: 8px;
-            font-size: 14px;
-            font-weight: bold;
-            cursor: pointer;
-            box-shadow: 0 3px 10px rgba(0,0,0,0.2);
-        ">🖨️ Imprimer</button>
-    </div>
-
-    <div id="view-categories" class="report-container">
-        <!-- Header -->
-        <div class="header">
-            <h1>📊 Rapport d'Activité Quotidien</h1>
-            <p><strong>${Utils.escapeHtml(user)}</strong> - ${date}</p>
-        </div>
-
-        ${aircallStatus?.state === 'error' ? `
-        <div style="margin:0 25px 20px;padding:12px 16px;border-radius:8px;background:#ffebee;color:#b71c1c;font-size:12px;">
-            ⚠️ ${Utils.escapeHtml(aircallStatus.message || 'Échec de la collecte Aircall')}
-        </div>` : ''}
-
-        <!-- Alerte emails en attente -->
-        ${(pendingEmailsCount || 0) > 0 ? `
-        <div style="background: linear-gradient(135deg, #ffcccb 0%, #ff6b6b 100%); padding: 15px 20px; border-radius: 10px; margin-bottom: 20px; display: flex; align-items: center; justify-content: space-between;">
-            <div style="display: flex; align-items: center; gap: 15px;">
-                <div style="font-size: 32px;">📬</div>
-                <div>
-                    <div style="font-size: 14px; color: #7f0000; font-weight: bold;">Emails assignés à ${Utils.escapeHtml(user)}</div>
-                </div>
-            </div>
-            <div style="font-size: 36px; font-weight: bold; color: #b71c1c;">${pendingEmailsCount || 0}</div>
-        </div>
-        ` : ''}
-
-        <!-- Summary -->
-        <div class="summary">
-            <div class="summary-card bg-blue">
-                <div class="number">${emailsSent.length}</div>
-                <div class="label">📤 Emails Envoyés</div>
-            </div>
-            <div class="summary-card bg-green">
-                <div class="number">${emailsAffected.length}</div>
-                <div class="label">📥 Emails Affectés</div>
-            </div>
-            <div class="summary-card" style="background: linear-gradient(135deg, #ff8f00, #e65100);">
-                <div class="number">${(aircallCalls || []).length}</div>
-                <div class="label">📞 Appels (${aircallInbound}↓ ${aircallOutbound}↑)</div>
-            </div>
-            <div class="summary-card bg-orange">
-                <div class="number">${tasksCompleted.length}</div>
-                <div class="label">✅ Tâches Terminées</div>
-            </div>
-            <div class="summary-card bg-red">
-                <div class="number">${tasksOverdue.length}</div>
-                <div class="label">⚠️ Tâches en Retard</div>
-            </div>
-            <div class="summary-card bg-cyan">
-                <div class="number">${estimates.length}</div>
-                <div class="label">📋 Devis</div>
-            </div>
-            <div class="summary-card bg-indigo">
-                <div class="number">${policies.length}</div>
-                <div class="label">📄 Contrats</div>
-            </div>
-            <div class="summary-card bg-pink">
-                <div class="number">${claims.length}</div>
-                <div class="label">🚨 Sinistres</div>
-            </div>
-            <div class="summary-card bg-purple">
-                <div class="number">${logs.length}</div>
-                <div class="label">📝 Autres Actions</div>
-            </div>
-        </div>
-
-        <div class="section" style="display:grid;grid-template-columns:repeat(4,1fr);gap:10px;">
-            <div style="padding:14px;background:#e3f2fd;border-radius:8px;text-align:center;"><strong style="font-size:22px;color:#1565c0;">${uniqueClients}</strong><br><small>Dossiers/clients traités</small></div>
-            <div style="padding:14px;background:#e8f5e9;border-radius:8px;text-align:center;"><strong style="font-size:22px;color:#2e7d32;">${estimates.length + policies.length}</strong><br><small>Actions de production</small></div>
-            <div style="padding:14px;background:#fff3e0;border-radius:8px;text-align:center;"><strong style="font-size:22px;color:#ef6c00;">${tasksCompleted.length}</strong><br><small>Suivis finalisés</small></div>
-            <div style="padding:14px;background:${remainingWork ? '#ffebee' : '#e8f5e9'};border-radius:8px;text-align:center;"><strong style="font-size:22px;color:${remainingWork ? '#c62828' : '#2e7d32'};">${remainingWork}</strong><br><small>Éléments restant à traiter</small></div>
-        </div>
-
-        <!-- Emails Envoyés -->
-        ${emailsSent.length > 0 ? `
-        <div class="section">
-            <h2 class="section-title blue">📤 Emails Envoyés (${emailsSent.length})</h2>
-            <table>
-                <tr>
-                    <th style="width: 100px;">Date</th>
-                    <th style="width: 200px;">Destinataire</th>
-                    <th>Objet</th>
-                </tr>
-                ${emailsSent.map(e => `
-                <tr>
-                    <td>${e.date || ''} ${e.time || ''}</td>
-                    <td>
-                        ${e.clientName ? `<strong>${Utils.escapeHtml(e.clientName)}</strong><br>` : ''}
-                        <span style="color: #666;">${Utils.escapeHtml(e.toEmail || e.to || '')}</span>
-                    </td>
-                    <td>
-                        <strong>${Utils.escapeHtml(e.subject || 'Sans objet')}</strong>
-                        ${e.body ? `<div class="email-content">${Utils.escapeHtml(e.body)}</div>` : ''}
-                    </td>
-                </tr>
-                `).join('')}
-            </table>
-        </div>
-        ` : ''}
-
-        <!-- Emails Affectés -->
-        ${emailsAffected.length > 0 ? `
-        <div class="section">
-            <h2 class="section-title green">📥 Emails Affectés (${emailsAffected.length})</h2>
-            <table>
-                <tr>
-                    <th style="width: 100px;">Date</th>
-                    <th style="width: 180px;">Expéditeur</th>
-                    <th>Objet</th>
-                    <th style="width: 150px;">Affecté à</th>
-                </tr>
-                ${emailsAffected.map(e => `
-                <tr>
-                    <td>${e.date || ''} ${e.time || ''}</td>
-                    <td>${Utils.escapeHtml(e.from || e.fromEmail || '')}</td>
-                    <td><strong>${Utils.escapeHtml(e.subject || 'Sans objet')}</strong></td>
-                    <td>${Utils.escapeHtml(e.affectedTo || '')}</td>
-                </tr>
-                `).join('')}
-            </table>
-        </div>
-        ` : ''}
-
-        <!-- Appels Téléphoniques Aircall -->
-        ${(aircallCalls || []).length > 0 ? `
-        <div class="section">
-            <h2 class="section-title" style="color: #ff8f00; border-color: #ff8f00;">📞 Appels Téléphoniques (${(aircallCalls || []).length}) - ${aircallInbound} entrants / ${aircallOutbound} sortants</h2>
-            <table>
-                <tr>
-                    <th style="width: 80px;">Heure</th>
-                    <th style="width: 80px;">Type</th>
-                    <th style="width: 150px;">Contact</th>
-                    <th style="width: 80px;">Durée</th>
-                    <th style="width: 80px;">Humeur</th>
-                    <th>Analyse de l’appel</th>
-                </tr>
-                ${(aircallCalls || []).map(c => `
-                <tr>
-                    <td>${c.time || ''}</td>
-                    <td>${c.type === 'sortant' ? '📤 Sortant' : '📥 Entrant'}</td>
-                    <td><strong>${Utils.escapeHtml(c.contact || 'Inconnu')}</strong></td>
-                    <td>${Utils.escapeHtml(c.duration || '0s')}</td>
-                    <td>${c.mood === 'Positif' ? '😊 Positif' : (c.mood === 'Négatif' ? '😟 Négatif' : (c.mood === 'Neutre' ? '😐 Neutre' : '-'))}</td>
-                    <td style="font-size: 12px;">
-                        ${c.summary ? `<strong>Résumé :</strong> ${Utils.escapeHtml(c.summary)}` : '<span style="color:#999;">Résumé indisponible</span>'}
-                        ${c.topics?.length ? `<br><strong>Sujets clés :</strong> ${c.topics.map(topic => Utils.escapeHtml(topic)).join(' · ')}` : ''}
-                        ${c.actionItems?.length ? `<br><strong>Actions :</strong><ul>${c.actionItems.map(action => `<li>${Utils.escapeHtml(action)}</li>`).join('')}</ul>` : ''}
-                        ${c.transcript ? `<details><summary>Voir la transcription</summary><div style="white-space:pre-wrap;font-size:11px;">${Utils.escapeHtml(c.transcript)}</div></details>` : ''}
-                    </td>
-                </tr>
-                `).join('')}
-            </table>
-        </div>
-        ` : ''}
-
-        <!-- Tâches Terminées -->
-        ${tasksCompleted.length > 0 ? `
-        <div class="section">
-            <h2 class="section-title orange">✅ Tâches Terminées (${tasksCompleted.length})</h2>
-            <table>
-                <tr>
-                    <th style="width: 70px;">Heure</th>
-                    <th style="width: 220px;">Tâche</th>
-                    <th style="width: 150px;">Client</th>
-                    <th>Contenu</th>
-                </tr>
-                ${tasksCompleted.map(t => `
-                <tr>
-                    <td style="text-align: center; font-weight: bold; color: #f57c00;">${t.closedTime || '-'}</td>
-                    <td><strong>${Utils.escapeHtml(t.title || '')}</strong></td>
-                    <td>
-                        ${t.clientId ? `<a href="https://courtage.modulr.fr/fr/scripts/clients/clients_card.php?id=${t.clientId}" target="_blank">` : ''}
-                        ${Utils.escapeHtml(t.clientName || t.client || 'Non associé')}
-                        ${t.clientId ? '</a>' : ''}
-                    </td>
-                    <td>${t.content ? `<div class="task-content">${Utils.escapeHtml(t.content)}</div>` : '<span style="color:#999;">-</span>'}</td>
-                </tr>
-                `).join('')}
-            </table>
-        </div>
-        ` : ''}
-
-        <!-- Tâches en Retard -->
-        ${tasksOverdue.length > 0 ? `
-        <div class="section">
-            <h2 class="section-title red">⚠️ Tâches en Retard (${tasksOverdue.length})</h2>
-            <table>
-                <tr>
-                    <th style="width: 250px;">Tâche</th>
-                    <th style="width: 150px;">Client</th>
-                    <th>Contenu</th>
-                    <th style="width: 100px;">Retard</th>
-                </tr>
-                ${tasksOverdue.map(t => `
-                <tr>
-                    <td><strong>${Utils.escapeHtml(t.title || '')}</strong></td>
-                    <td>${Utils.escapeHtml(t.clientName || t.client || 'Non associé')}</td>
-                    <td>${t.content ? `<div class="task-content">${Utils.escapeHtml(t.content)}</div>` : '<span style="color:#999;">-</span>'}</td>
-                    <td><span class="badge badge-red">${t.daysOverdue || '?'}j de retard</span></td>
-                </tr>
-                `).join('')}
-            </table>
-        </div>
-        ` : ''}
-
-        <!-- Devis -->
-        ${estimates.length > 0 ? `
-        <div class="section">
-            <h2 class="section-title cyan">📋 Devis (${estimates.length})</h2>
-            <table>
-                <tr>
-                    <th style="width: 100px;">Action</th>
-                    <th style="width: 200px;">Devis</th>
-                    <th>Modifications</th>
-                    <th style="width: 120px;">Date</th>
-                </tr>
-                ${estimates.map(e => `
-                <tr>
-                    <td>${e.action || ''}</td>
-                    <td>${Utils.escapeHtml(e.entityName || '')}</td>
-                    <td>${e.changes && e.changes.length > 0 ? e.changes.map(c => `<strong>${c.field}</strong>: ${c.oldValue} → ${c.newValue}`).join('<br>') : '<span style="color:#999;">Création</span>'}</td>
-                    <td>${e.date || ''}</td>
-                </tr>
-                `).join('')}
-            </table>
-        </div>
-        ` : ''}
-
-        <!-- Contrats -->
-        ${policies.length > 0 ? `
-        <div class="section">
-            <h2 class="section-title indigo">📄 Contrats (${policies.length})</h2>
-            <table>
-                <tr>
-                    <th style="width: 100px;">Action</th>
-                    <th style="width: 200px;">Contrat</th>
-                    <th>Modifications</th>
-                    <th style="width: 120px;">Date</th>
-                </tr>
-                ${policies.map(p => `
-                <tr>
-                    <td>${p.action || ''}</td>
-                    <td>${Utils.escapeHtml(p.entityName || '')}</td>
-                    <td>${p.changes && p.changes.length > 0 ? p.changes.map(c => `<strong>${c.field}</strong>: ${c.oldValue} → ${c.newValue}`).join('<br>') : '<span style="color:#999;">Création</span>'}</td>
-                    <td>${p.date || ''}</td>
-                </tr>
-                `).join('')}
-            </table>
-        </div>
-        ` : ''}
-
-        <!-- Sinistres -->
-        ${claims.length > 0 ? `
-        <div class="section">
-            <h2 class="section-title pink">🚨 Sinistres (${claims.length})</h2>
-            <table>
-                <tr>
-                    <th style="width: 100px;">Action</th>
-                    <th style="width: 200px;">Sinistre</th>
-                    <th>Modifications</th>
-                    <th style="width: 120px;">Date</th>
-                </tr>
-                ${claims.map(c => `
-                <tr>
-                    <td>${c.action || ''}</td>
-                    <td>${Utils.escapeHtml(c.entityName || '')}</td>
-                    <td>${c.changes && c.changes.length > 0 ? c.changes.map(ch => `<strong>${ch.field}</strong>: ${ch.oldValue} → ${ch.newValue}`).join('<br>') : '<span style="color:#999;">Création</span>'}</td>
-                    <td>${c.date || ''}</td>
-                </tr>
-                `).join('')}
-            </table>
-        </div>
-        ` : ''}
-
-        <!-- Autres Actions -->
-        ${logs.length > 0 ? `
-        <div class="section">
-            <h2 class="section-title purple">📝 Autres Actions (${logs.length})</h2>
-            <table>
-                <tr>
-                    <th style="width: 100px;">Action</th>
-                    <th style="width: 100px;">Type</th>
-                    <th style="width: 180px;">Fiche</th>
-                    <th>Modifications</th>
-                    <th style="width: 120px;">Date</th>
-                </tr>
-                ${logs.map(l => `
-                <tr>
-                    <td>${l.action || ''}</td>
-                    <td>${Utils.escapeHtml(l.table || '')}</td>
-                    <td>${Utils.escapeHtml(l.entityName || '')}</td>
-                    <td>${l.changes && l.changes.length > 0 ? l.changes.slice(0, 5).map(c => `<strong>${c.field}</strong>: ${c.oldValue} → ${c.newValue}`).join('<br>') + (l.changes.length > 5 ? '<br><em>+ ' + (l.changes.length - 5) + ' autres...</em>' : '') : '<span style="color:#999;">-</span>'}</td>
-                    <td>${l.date || ''}</td>
-                </tr>
-                `).join('')}
-            </table>
-        </div>
-        ` : ''}
-
-
-        ${notes ? `
-        <div class="section" style="background:#fffde7;">
-            <h2 class="section-title" style="color:#6d4c00;border-color:#f9a825;">🗒️ Notes et précisions</h2>
-            <div style="white-space:pre-wrap;">${Utils.escapeHtml(notes)}</div>
-        </div>` : ''}
-
-        <!-- Footer -->
-        <div class="footer">
-            <p>Rapport généré le ${new Date().toLocaleString('fr-FR')} par LTOA Modulr Script v5.4.0</p>
-        </div>
-    </div>
-
-    <!-- Vue Chronologique (cachée par défaut) -->
-    <div id="view-chrono" class="report-container" style="display: none;">
-        <div class="header" style="background: linear-gradient(135deg, #9c27b0, #7b1fa2);">
-            <h1>🕐 Vue Chronologique</h1>
-            <p><strong>${Utils.escapeHtml(user)}</strong> - ${date}</p>
-        </div>
-        <div style="padding: 20px;">
-            ${this.generateChronoViewHTML()}
-        </div>
-        <div class="footer">
-            <p>Rapport généré le ${new Date().toLocaleString('fr-FR')} par LTOA Modulr Script v5.4.0</p>
-        </div>
-    </div>
-
-    <!-- Vue par Client (cachée par défaut) -->
-    <div id="view-client" class="report-container" style="display: none;">
-        <div class="header" style="background: linear-gradient(135deg, #1565c0, #0d47a1);">
-            <h1>👤 Vue par Client</h1>
-            <p>Toutes les actions groupées par client</p>
-        </div>
-        <div style="padding: 20px;">
-            ${this.generateClientViewHTML()}
-        </div>
-        <div class="footer">
-            <p>Rapport généré le ${new Date().toLocaleString('fr-FR')} par LTOA Modulr Script v5.4.0</p>
-        </div>
-    </div>
-
-    <script>
-        function showView(viewName) {
-            // Cacher toutes les vues
-            document.getElementById('view-categories').style.display = 'none';
-            document.getElementById('view-chrono').style.display = 'none';
-            document.getElementById('view-client').style.display = 'none';
-
-            // Afficher la vue demandée
-            document.getElementById('view-' + viewName).style.display = 'block';
-
-            // Mettre à jour les styles des boutons
-            document.getElementById('btn-categories').style.opacity = '0.6';
-            document.getElementById('btn-chrono').style.opacity = '0.6';
-            document.getElementById('btn-client').style.opacity = '0.6';
-            document.getElementById('btn-' + viewName).style.opacity = '1';
-        }
-
-        // Fonction pour déplier/replier les détails client
-        function toggleClient(id) {
-            const el = document.getElementById(id);
-            const icon = document.getElementById('icon-' + id);
-            if (el.style.display === 'none') {
-                el.style.display = 'block';
-                icon.textContent = '▼';
-            } else {
-                el.style.display = 'none';
-                icon.textContent = '▶';
-            }
-        }
-    </script>
+${clone.outerHTML}
 </body>
 </html>`;
 
-            // Créer le blob et télécharger
-            const blob = new Blob([htmlContent], { type: 'text/html;charset=utf-8' });
-            const url = URL.createObjectURL(blob);
-            const a = document.createElement('a');
-            a.href = url;
-            a.download = `Rapport_${user.replace(/\s+/g, '_')}_${date.replace(/\//g, '-')}.html`;
-            document.body.appendChild(a);
-            a.click();
-            document.body.removeChild(a);
-            URL.revokeObjectURL(url);
-
-            alert(`✅ HTML exporté: ${a.download}\n\nVous pouvez l'ouvrir dans n'importe quel navigateur, l'imprimer ou le partager par email !`);
+                const blob = new Blob([htmlContent], { type: 'text/html;charset=utf-8' });
+                const url = URL.createObjectURL(blob);
+                const link = document.createElement('a');
+                link.href = url;
+                link.download = `Rapport_${String(this.data.user || 'Utilisateur').replace(/\s+/g, '_')}_${String(this.data.date || '').replace(/\//g, '-')}.html`;
+                document.body.appendChild(link);
+                link.click();
+                link.remove();
+                URL.revokeObjectURL(url);
+            } catch (error) {
+                console.error('[LTOA-Report] Erreur export HTML:', error);
+                alert('Erreur lors de l’export HTML. Consultez la console F12.');
+            }
         },
 
         // Générer le HTML de la vue chronologique pour l'export
