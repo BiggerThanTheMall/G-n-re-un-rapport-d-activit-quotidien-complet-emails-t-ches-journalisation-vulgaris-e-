@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         LTOA Modulr - Rapport Quotidien
 // @namespace    https://github.com/BiggerThanTheMall/tampermonkey-ltoa
-// @version      5.3.1
+// @version      5.4.0
 // @description  Génération automatique du rapport d’activité quotidien dans Modulr
 // @author       LTOA Assurances
 // @match        https://courtage.modulr.fr/*
@@ -532,6 +532,43 @@
             result = result.replace(/\n +\n/g, '\n\n');  // Lignes avec seulement des espaces
 
             return result.trim();
+        },
+
+        cleanRichText: (text) => {
+            if (!text) return '';
+
+            let value = String(text)
+                .replace(/\\r\\n/g, '\n')
+                .replace(/\\n/g, '\n')
+                .replace(/\\r/g, '\n')
+                .replace(/\\\//g, '/');
+
+            // Décoder les entités AVANT de retirer les balises, car certaines
+            // notes de tâches arrivent sous la forme &lt;/p&gt;.
+            const decoder = document.createElement('textarea');
+            decoder.innerHTML = value;
+            value = decoder.value;
+            decoder.innerHTML = value;
+            value = decoder.value;
+
+            value = value
+                .replace(/<br\s*\/?>/gi, '\n')
+                .replace(/<\/p>/gi, '\n')
+                .replace(/<\/div>/gi, '\n')
+                .replace(/<\/li>/gi, '\n')
+                .replace(/<[^>]+>/g, '')
+                .replace(/&nbsp;/gi, ' ');
+
+            decoder.innerHTML = value;
+            value = decoder.value;
+
+            return value
+                .replace(/\r\n/g, '\n')
+                .replace(/\r/g, '\n')
+                .replace(/[ \t]+/g, ' ')
+                .replace(/ *\n */g, '\n')
+                .replace(/\n{3,}/g, '\n\n')
+                .trim();
         },
 
         getConnectedUser: () => {
@@ -1338,6 +1375,64 @@
     };
 
     // ============================================
+    // COLLECTEUR DES DEVIS ACTUELLEMENT ASSIGNÉS
+    // ============================================
+    const EstimatesAssignmentCollector = {
+        async collect(userId, updateLoader) {
+            const empty = { total: 0, statuses: [] };
+            try {
+                if (updateLoader) updateLoader('Comptage des devis actuellement assignés...');
+                const html = await Utils.fetchPage('https://courtage.modulr.fr/fr/scripts/dashboard/dashboard.php');
+                const doc = Utils.parseHTML(html);
+                const referentId = String(userId?.logValue || '').trim();
+                if (!referentId) return empty;
+
+                const tables = Array.from(doc.querySelectorAll('table.box_statistics'));
+                const table = tables.find(t => /Mes devis/i.test(t.textContent || ''));
+                if (!table) {
+                    Utils.log('Widget "Mes devis" introuvable sur le tableau de bord');
+                    return empty;
+                }
+
+                const statuses = [];
+                for (const row of table.querySelectorAll('tr.box_statistics_line')) {
+                    const label = row.querySelector('.box_statistics_status')?.textContent?.replace(/\s+/g, ' ').trim();
+                    if (!label || /sans référent/i.test(label)) continue;
+
+                    const links = Array.from(row.querySelectorAll('a[href*="referent_user_id="]'));
+                    const mine = links.find(a => {
+                        try {
+                            const url = new URL(a.getAttribute('href'), location.origin);
+                            return url.searchParams.get('referent_user_id') === referentId &&
+                                   url.searchParams.get('no_referent') !== '1';
+                        } catch (_) {
+                            return false;
+                        }
+                    });
+                    if (!mine) continue;
+
+                    const count = parseInt(mine.querySelector('.widget_number')?.textContent?.trim() || '0', 10) || 0;
+                    let status = '';
+                    try {
+                        const url = new URL(mine.getAttribute('href'), location.origin);
+                        status = url.searchParams.get('status') || '';
+                    } catch (_) {}
+
+                    statuses.push({ label, status, count });
+                }
+
+                return {
+                    total: statuses.reduce((sum, item) => sum + item.count, 0),
+                    statuses
+                };
+            } catch (error) {
+                Utils.log('Erreur comptage devis assignés:', error);
+                return empty;
+            }
+        }
+    };
+
+    // ============================================
     // COLLECTEUR DE TÂCHES TERMINÉES
     // ============================================
     const TasksCompletedCollector = {
@@ -1401,7 +1496,7 @@
                             if (!nextRow.id || !nextRow.id.startsWith('task:')) {
                                 const contentCell = nextRow.querySelector('td[colspan] p');
                                 if (contentCell) {
-                                    content = Utils.cleanText(contentCell.innerHTML);
+                                    content = Utils.cleanRichText(contentCell.innerHTML);
                                     Utils.log(`Contenu trouvé (${content.length} chars): ${content.substring(0, 80)}...`);
                                 }
                             }
@@ -1412,7 +1507,7 @@
                             const taskIdPattern = new RegExp(`id="task:${taskId}"[\\s\\S]*?<tr[^>]*>\\s*<td[^>]*colspan[^>]*>\\s*<p[^>]*>([\\s\\S]*?)<\\/p>`, 'i');
                             const match = html.match(taskIdPattern);
                             if (match) {
-                                content = Utils.cleanText(match[1]);
+                                content = Utils.cleanRichText(match[1]);
                                 Utils.log(`Contenu trouvé via regex (${content.length} chars)`);
                             }
                         }
@@ -1499,7 +1594,7 @@
                 const regexContent = /<td\s+colspan[^>]*>\s*<p[^>]*>([\s\S]*?)<\/p>\s*<\/td>/i;
                 const match = html.match(regexContent);
                 if (match) {
-                    content = Utils.cleanText(match[1]);
+                    content = Utils.cleanRichText(match[1]);
                     Utils.log(`Contenu tâche trouvé via regex (${content.length} chars): ${content.substring(0, 80)}...`);
                 }
 
@@ -1510,10 +1605,7 @@
                     // Chercher td[colspan] p
                     const contentCell = doc.querySelector('td[colspan] p');
                     if (contentCell) {
-                        content = contentCell.innerHTML
-                            .replace(/<br\s*\/?>/gi, '\n')
-                            .replace(/<[^>]+>/g, '')
-                            .trim();
+                        content = Utils.cleanRichText(contentCell.innerHTML);
                         Utils.log(`Contenu tâche trouvé via DOM: ${content.substring(0, 80)}...`);
                     }
 
@@ -1521,7 +1613,7 @@
                     if (!content) {
                         const textarea = doc.querySelector('textarea');
                         if (textarea && textarea.value) {
-                            content = textarea.value.trim();
+                            content = Utils.cleanRichText(textarea.value);
                         }
                     }
                 }
@@ -1609,7 +1701,7 @@
                             if (!nextRow.id || !nextRow.id.startsWith('task:')) {
                                 const contentCell = nextRow.querySelector('td[colspan] p');
                                 if (contentCell) {
-                                    content = Utils.cleanText(contentCell.innerHTML);
+                                    content = Utils.cleanRichText(contentCell.innerHTML);
                                     Utils.log(`Contenu tâche retard trouvé: ${content.substring(0, 50)}...`);
                                 }
                             }
@@ -2098,16 +2190,19 @@
                 }
             });
 
-            // Depuis les logs - extraire le N° depuis entityName (format "n° XXXX du DD/MM/YYYY")
+            // Depuis les logs : un identifiant de devis/contrat/sinistre n'est PAS
+            // un identifiant client. On utilise uniquement client_id lorsqu'il est
+            // réellement présent dans les changements du journal.
             [...data.estimates, ...data.policies, ...data.claims, ...data.logs].forEach(log => {
-                if (log.entityId) {
-                    searchItems.push({ type: 'id', value: log.entityId, source: log });
-                } else if (log.entityName) {
-                    // Essayer d'extraire un N° client
-                    const numMatch = log.entityName.match(/n°\s*(\d+)/i);
-                    if (numMatch) {
-                        searchItems.push({ type: 'id', value: numMatch[1], source: log });
-                    }
+                const clientChange = (log.changes || []).find(change => change.fieldRaw === 'client_id');
+                if (!clientChange) return;
+
+                const candidate = [clientChange.newValueRaw, clientChange.oldValueRaw]
+                    .find(value => value && value !== '-' && /^\d+$/.test(String(value).trim()));
+
+                if (candidate) {
+                    log.clientId = String(candidate).trim();
+                    searchItems.push({ type: 'id', value: log.clientId, source: log });
                 }
             });
 
@@ -2453,10 +2548,11 @@
                 }
             });
 
-            // Logs (devis, contrats, sinistres)
+            // Logs (devis, contrats, sinistres) : enrichir uniquement avec un
+            // véritable client_id identifié dans le journal.
             [...data.estimates, ...data.policies, ...data.claims, ...data.logs].forEach(log => {
-                if (log.entityId) {
-                    const clientInfo = this.getClientInfo(log.entityId);
+                if (log.clientId) {
+                    const clientInfo = this.getClientInfo(log.clientId);
                     if (clientInfo) {
                         log.clientId = clientInfo.id;
                         log.clientName = clientInfo.name;
@@ -2481,6 +2577,82 @@
     };
 
     // ============================================
+    // DICTIONNAIRE MÉTIER DES ÉVÉNEMENTS
+    // ============================================
+    const ActivityDictionary = {
+        classify(log) {
+            const action = String(log?.actionRaw || log?.action || '').toLowerCase();
+            const fields = (log?.changes || []).map(change => change.fieldRaw);
+
+            if (/insertion|création|insert/.test(action)) {
+                return { kind: 'creation', label: 'Création', subtype: 'creation' };
+            }
+            if (/suppression|delete/.test(action)) {
+                return { kind: 'deletion', label: 'Suppression', subtype: 'suppression' };
+            }
+
+            const rules = [
+                { subtype: 'etat', label: 'État', fields: ['status', 'estimate_status', 'policy_status'] },
+                { subtype: 'apporteur', label: 'Apporteur', fields: ['producer_id', 'producer', 'business_introducer_id'] },
+                { subtype: 'compagnie', label: 'Compagnie', fields: ['company_id', 'company'] },
+                { subtype: 'referent', label: 'Référent', fields: ['referent_user_id', 'manager_user_id', 'user_id'] },
+                { subtype: 'produit', label: 'Produit', fields: ['product_id', 'product_type_id'] },
+                { subtype: 'tarif', label: 'Tarif / prime', fields: ['premium', 'total_amount', 'commission'] },
+                { subtype: 'dates', label: 'Dates', fields: ['effective_date', 'start_date', 'end_date', 'renewal_date', 'expiration_date', 'validity_date', 'expiry_date'] },
+                { subtype: 'client', label: 'Client', fields: ['client_id'] }
+            ];
+
+            for (const rule of rules) {
+                if (fields.some(field => rule.fields.includes(field))) {
+                    return { kind: 'update', label: rule.label, subtype: rule.subtype };
+                }
+            }
+
+            return { kind: 'update', label: 'Autre modification', subtype: 'autre' };
+        },
+
+        summarize(log) {
+            const classification = this.classify(log);
+            const meaningful = (log?.changes || []).filter(change =>
+                !['last_update', 'last_update_user_id', 'creation_date', 'creation_user_id'].includes(change.fieldRaw)
+            );
+
+            if (classification.kind === 'creation') return 'Nouveau dossier créé';
+            if (classification.kind === 'deletion') return 'Dossier supprimé';
+            if (!meaningful.length) return classification.label;
+
+            const main = meaningful.find(change => {
+                if (classification.subtype === 'etat') return change.fieldRaw === 'status';
+                if (classification.subtype === 'compagnie') return change.fieldRaw === 'company_id';
+                if (classification.subtype === 'apporteur') return /producer/.test(change.fieldRaw);
+                if (classification.subtype === 'referent') return /referent|manager_user|^user_id$/.test(change.fieldRaw);
+                return true;
+            }) || meaningful[0];
+
+            const before = Utils.translateValue(main.oldValueRaw || main.oldValue || '-');
+            const after = Utils.translateValue(main.newValueRaw || main.newValue || '-');
+
+            if (before && before !== '-' && after && after !== '-') {
+                return `${classification.label} : ${before} → ${after}`;
+            }
+            if (after && after !== '-') return `${classification.label} → ${after}`;
+            return classification.label;
+        },
+
+        counts(logs) {
+            const result = { creation: 0, update: 0, deletion: 0, subtypes: {} };
+            for (const log of logs || []) {
+                const c = this.classify(log);
+                result[c.kind] = (result[c.kind] || 0) + 1;
+                if (c.kind === 'update') {
+                    result.subtypes[c.subtype] = (result.subtypes[c.subtype] || 0) + 1;
+                }
+            }
+            return result;
+        }
+    };
+
+    // ============================================
     // GÉNÉRATEUR DE RAPPORT (UI)
     // ============================================
     const ReportGenerator = {
@@ -2499,741 +2671,274 @@
         },
 
         generateHTML() {
-            const { emailsSent, emailsAffected, pendingEmailsCount, aircallCalls, tasksCompleted, tasksOverdue, logs, estimates, policies, claims, user, date, notes, aircallStatus } = this.data;
+            const {
+                emailsSent = [], emailsAffected = [], pendingEmailsCount = 0,
+                aircallCalls = [], tasksCompleted = [], tasksOverdue = [],
+                logs = [], estimates = [], policies = [], claims = [],
+                assignedEstimates = { total: 0, statuses: [] },
+                user, date, notes, aircallStatus
+            } = this.data;
 
-            // Vérifier si c'est un rapport pour un jour passé
+            const clean = value => Utils.escapeHtml(Utils.cleanRichText(value || ''));
             const realToday = Utils.getRealTodayDate();
             const isPastDate = date !== realToday;
-            const dateLabel = isPastDate ? `📅 ${date} <span style="background: #ff9800; color: white; padding: 2px 8px; border-radius: 3px; font-size: 12px; margin-left: 8px;">Rapport rétrospectif</span>` : date;
 
-            // Compteurs Aircall
-            const aircallInbound = (aircallCalls || []).filter(c => c.type === 'entrant').length;
-            const aircallOutbound = (aircallCalls || []).filter(c => c.type === 'sortant').length;
-            const aircallAnswered = (aircallCalls || []).filter(c => c.answered !== false && !c.missedReason).length;
-            const aircallTalkSeconds = (aircallCalls || []).reduce((sum, c) => sum + (Number(c.durationSeconds) || 0), 0);
-            const formatDuration = seconds => `${Math.floor(seconds / 3600)}h ${Math.floor((seconds % 3600) / 60)}min`;
-            const uniqueClients = new Set([
-                ...emailsSent, ...emailsAffected, ...tasksCompleted,
-                ...estimates, ...policies, ...claims, ...logs
-            ].map(item => item.clientId || item.clientName || item.entityId)
-              .filter(value => value && value !== 'N/A' && value !== 'Non associé')).size;
-            const remainingWork = (pendingEmailsCount || 0) + tasksOverdue.length;
+            const estimateCounts = ActivityDictionary.counts(estimates);
+            const policyCounts = ActivityDictionary.counts(policies);
+            const claimCounts = ActivityDictionary.counts(claims);
 
-            // Générer un ID unique pour les toggles
-            const uid = Date.now();
+            const formatCountLine = counts => [
+                counts.creation ? `${counts.creation} création${counts.creation > 1 ? 's' : ''}` : '',
+                counts.update ? `${counts.update} modification${counts.update > 1 ? 's' : ''}` : '',
+                counts.deletion ? `${counts.deletion} suppression${counts.deletion > 1 ? 's' : ''}` : ''
+            ].filter(Boolean).join(' · ') || 'Aucune action';
+
+            const renderSubtypeLine = counts => {
+                const labels = {
+                    apporteur: 'apporteur',
+                    compagnie: 'compagnie',
+                    etat: 'état',
+                    referent: 'référent',
+                    produit: 'produit',
+                    tarif: 'tarif / prime',
+                    dates: 'dates',
+                    client: 'client',
+                    autre: 'autre'
+                };
+                const items = Object.entries(counts.subtypes || {})
+                    .filter(([, count]) => count > 0)
+                    .map(([key, count]) => `${count} ${labels[key] || key}`);
+                return items.join(' · ');
+            };
+
+            const renderLogRows = (items, entityLabel) => (items || []).map(log => {
+                const classification = ActivityDictionary.classify(log);
+                const client = log.clientName || (log.clientId ? `Client n° ${log.clientId}` : '');
+                return `
+                    <tr>
+                        <td class="ltoa-time">${Utils.escapeHtml(log.date || '')}</td>
+                        <td><span class="ltoa-tag ltoa-${classification.kind}">${Utils.escapeHtml(classification.label)}</span></td>
+                        <td class="ltoa-client">${Utils.escapeHtml(client || '—')}</td>
+                        <td>${Utils.escapeHtml(log.entityName && log.entityName !== 'N/A' ? log.entityName : `${entityLabel} n° ${log.entityId || ''}`)}</td>
+                        <td>${Utils.escapeHtml(ActivityDictionary.summarize(log))}</td>
+                    </tr>`;
+            }).join('');
+
+            const renderTaskCards = (items, overdue = false) => (items || []).map(task => {
+                const text = Utils.cleanRichText(task.content || '');
+                return `
+                    <div class="ltoa-row-card">
+                        <div class="ltoa-row-main">
+                            <strong>${Utils.escapeHtml(task.title || 'Tâche')}</strong>
+                            <span>${Utils.escapeHtml(task.clientName || task.client || 'Sans client')}</span>
+                        </div>
+                        <div class="ltoa-row-meta">
+                            ${overdue ? `${task.daysOverdue || 0} j de retard · échéance ${Utils.escapeHtml(task.dueDate || '')}`
+                                      : `${Utils.escapeHtml(task.closedTime || task.time || '')}`}
+                        </div>
+                        ${text ? `<div class="ltoa-note-text">${Utils.escapeHtml(text)}</div>` : ''}
+                    </div>`;
+            }).join('');
+
+            const renderAssigned = () => {
+                if (!assignedEstimates || !assignedEstimates.statuses?.length) return '';
+                return `
+                    <div class="ltoa-assigned">
+                        <div class="ltoa-assigned-total"><strong>${assignedEstimates.total}</strong><span>devis actuellement assignés</span></div>
+                        <div class="ltoa-assigned-statuses">
+                            ${assignedEstimates.statuses.map(item => `
+                                <span><b>${item.count}</b> ${Utils.escapeHtml(item.label)}</span>
+                            `).join('')}
+                        </div>
+                    </div>`;
+            };
+
+            const section = (id, title, count, summary, body, open = false) => `
+                <details class="ltoa-section" ${open ? 'open' : ''}>
+                    <summary>
+                        <div><strong>${title}</strong><span class="ltoa-badge">${count}</span></div>
+                        <span class="ltoa-section-summary">${summary}</span>
+                    </summary>
+                    <div class="ltoa-section-body">${body}</div>
+                </details>`;
+
+            const table = (headers, rows, emptyText) => rows ? `
+                <div class="ltoa-table-wrap">
+                    <table class="ltoa-table">
+                        <thead><tr>${headers.map(h => `<th>${h}</th>`).join('')}</tr></thead>
+                        <tbody>${rows}</tbody>
+                    </table>
+                </div>` : `<div class="ltoa-empty">${emptyText}</div>`;
+
+            const emailRows = emailsSent.map(email => `
+                <tr>
+                    <td class="ltoa-time">${Utils.escapeHtml(email.time || email.date || '')}</td>
+                    <td>${Utils.escapeHtml(email.clientName || email.toEmail || '—')}</td>
+                    <td>${Utils.escapeHtml(email.subject || 'Sans objet')}</td>
+                </tr>`).join('');
+
+            const affectedRows = emailsAffected.map(email => `
+                <tr>
+                    <td class="ltoa-time">${Utils.escapeHtml(email.time || email.date || '')}</td>
+                    <td>${Utils.escapeHtml(email.clientName || email.fromEmail || '—')}</td>
+                    <td>${Utils.escapeHtml(email.subject || 'Sans objet')}</td>
+                </tr>`).join('');
+
+            const callRows = aircallCalls.map(call => `
+                <tr>
+                    <td class="ltoa-time">${Utils.escapeHtml(call.time || '')}</td>
+                    <td>${call.type === 'entrant' ? 'Entrant' : 'Sortant'}</td>
+                    <td>${Utils.escapeHtml(call.contact || call.phone || '—')}</td>
+                    <td>${Utils.escapeHtml(call.duration || '')}</td>
+                </tr>`).join('');
+
+            const otherRows = logs.map(log => `
+                <tr>
+                    <td class="ltoa-time">${Utils.escapeHtml(log.date || '')}</td>
+                    <td>${Utils.escapeHtml(log.table || log.tableRaw || '')}</td>
+                    <td>${Utils.escapeHtml(log.entityName || '')}</td>
+                    <td>${Utils.escapeHtml(ActivityDictionary.summarize(log))}</td>
+                </tr>`).join('');
+
+            const estimateSubtypeLine = renderSubtypeLine(estimateCounts);
+            const policySubtypeLine = renderSubtypeLine(policyCounts);
+            const claimSubtypeLine = renderSubtypeLine(claimCounts);
 
             return `
-                <div id="ltoa-report-modal" style="
-                    position: fixed;
-                    top: 0;
-                    left: 0;
-                    width: 100%;
-                    height: 100%;
-                    background: rgba(0,0,0,0.85);
-                    z-index: 999999;
-                    overflow-y: auto;
-                    font-family: Arial, sans-serif;
-                ">
-                    <div id="ltoa-report-content" style="
-                        max-width: 1200px;
-                        margin: 20px auto;
-                        background: white;
-                        border-radius: 10px;
-                        padding: 30px;
-                        box-shadow: 0 10px 50px rgba(0,0,0,0.3);
-                    ">
-                        <!-- Header -->
-                        <div style="display: flex; justify-content: space-between; align-items: center; border-bottom: 3px solid #c62828; padding-bottom: 20px; margin-bottom: 30px;">
-                            <div>
-                                <h1 style="color: #c62828; margin: 0; font-size: 24px;">📊 Rapport d'Activité Quotidien</h1>
-                                <p style="color: #666; margin: 5px 0 0 0; font-size: 16px;">
-                                    <strong>${user}</strong> - ${dateLabel}
-                                </p>
-                            </div>
-                            <div>
-                                <button id="ltoa-view-by-client" style="
-                                    background: #1565c0;
-                                    color: white;
-                                    border: none;
-                                    padding: 12px 20px;
-                                    border-radius: 5px;
-                                    cursor: pointer;
-                                    font-size: 13px;
-                                    margin-right: 8px;
-                                    font-weight: bold;
-                                ">👤 Vue par Client</button>
-                                <button id="ltoa-export-html" style="
-                                    background: #e65100;
-                                    color: white;
-                                    border: none;
-                                    padding: 12px 20px;
-                                    border-radius: 5px;
-                                    cursor: pointer;
-                                    font-size: 13px;
-                                    margin-right: 8px;
-                                    font-weight: bold;
-                                ">🌐 Exporter HTML</button>
-                                <button id="ltoa-view-chrono" style="
-                                    background: #9c27b0;
-                                    color: white;
-                                    border: none;
-                                    padding: 12px 20px;
-                                    border-radius: 5px;
-                                    cursor: pointer;
-                                    font-size: 13px;
-                                    margin-right: 8px;
-                                    font-weight: bold;
-                                ">🕐 Vue Chronologique</button>
-                                <button id="ltoa-close-report" style="
-                                    background: #666;
-                                    color: white;
-                                    border: none;
-                                    padding: 12px 20px;
-                                    border-radius: 5px;
-                                    cursor: pointer;
-                                    font-size: 13px;
-                                    font-weight: bold;
-                                ">✕ Fermer</button>
-                            </div>
-                        </div>
+                <div id="ltoa-report-modal">
+                    <style>
+                        #ltoa-report-modal{position:fixed;inset:0;z-index:2147483647;background:#f5f6f8;color:#1d2733;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Arial,sans-serif;overflow:auto}
+                        #ltoa-report-modal *{box-sizing:border-box}
+                        .ltoa-shell{min-height:100vh}
+                        .ltoa-topbar{position:sticky;top:0;z-index:3;height:64px;background:#fff;border-bottom:1px solid #e4e7eb;display:flex;align-items:center;justify-content:space-between;padding:0 28px}
+                        .ltoa-title{display:flex;align-items:baseline;gap:14px}.ltoa-title h1{font-size:21px;margin:0;font-weight:700}.ltoa-title span{font-size:13px;color:#687584}
+                        .ltoa-actions{display:flex;gap:8px}.ltoa-btn{border:1px solid #d7dce2;background:#fff;border-radius:8px;padding:8px 12px;font-size:12px;cursor:pointer;color:#344150}.ltoa-btn:hover{background:#f4f6f8}.ltoa-close{font-size:18px;line-height:1;padding:7px 10px}
+                        .ltoa-main{max-width:1480px;margin:0 auto;padding:22px 28px 42px}
+                        .ltoa-note{background:#fff7db;border:1px solid #f1df9d;border-radius:10px;padding:13px 16px;margin-bottom:14px;white-space:pre-wrap;font-size:13px;line-height:1.5}
+                        .ltoa-warning{background:#fff1f1;border:1px solid #f0c7c7;color:#9b2c2c;border-radius:10px;padding:11px 14px;margin-bottom:14px;font-size:12px}
+                        .ltoa-summary{display:grid;grid-template-columns:repeat(6,minmax(0,1fr));gap:10px;margin-bottom:14px}
+                        .ltoa-kpi{background:#fff;border:1px solid #e4e7eb;border-radius:10px;padding:14px 15px;min-width:0}.ltoa-kpi strong{display:block;font-size:22px;line-height:1.1}.ltoa-kpi span{font-size:11px;color:#728090}
+                        .ltoa-section{background:#fff;border:1px solid #e1e5ea;border-radius:11px;margin-bottom:10px;overflow:hidden}
+                        .ltoa-section>summary{list-style:none;cursor:pointer;display:flex;align-items:center;justify-content:space-between;gap:20px;padding:15px 17px;min-height:54px}.ltoa-section>summary::-webkit-details-marker{display:none}
+                        .ltoa-section>summary>div{display:flex;align-items:center;gap:9px;min-width:160px}.ltoa-section>summary strong{font-size:14px}.ltoa-badge{background:#eef1f4;border-radius:999px;padding:3px 8px;font-size:11px;color:#536170}
+                        .ltoa-section-summary{color:#697786;font-size:12px;text-align:right}.ltoa-section[open]>summary{border-bottom:1px solid #e8ebef}
+                        .ltoa-section-body{padding:16px 17px 18px}
+                        .ltoa-assigned{display:flex;align-items:flex-start;gap:18px;padding:12px 14px;background:#f7f9fb;border:1px solid #e6e9ed;border-radius:9px;margin-bottom:14px}
+                        .ltoa-assigned-total{min-width:150px}.ltoa-assigned-total strong{font-size:24px;display:block}.ltoa-assigned-total span{font-size:11px;color:#687584}.ltoa-assigned-statuses{display:flex;flex-wrap:wrap;gap:8px}.ltoa-assigned-statuses span{font-size:11px;background:#fff;border:1px solid #e1e5ea;padding:6px 8px;border-radius:7px}.ltoa-assigned-statuses b{font-size:13px}
+                        .ltoa-subtypes{font-size:12px;color:#5f6d7a;margin:0 0 12px}
+                        .ltoa-table-wrap{overflow:auto;border:1px solid #e4e7eb;border-radius:8px}.ltoa-table{width:100%;border-collapse:collapse;font-size:12px;background:#fff}.ltoa-table th{background:#f6f7f9;text-align:left;font-weight:600;color:#596675;padding:9px 10px;border-bottom:1px solid #e4e7eb;white-space:nowrap}.ltoa-table td{padding:9px 10px;border-bottom:1px solid #edf0f2;vertical-align:top}.ltoa-table tr:last-child td{border-bottom:0}.ltoa-time{white-space:nowrap;color:#6d7986}.ltoa-client{font-weight:600}
+                        .ltoa-tag{display:inline-block;border-radius:999px;padding:3px 7px;font-size:10px;font-weight:600}.ltoa-creation{background:#e9f7ef;color:#267344}.ltoa-update{background:#eef3ff;color:#315ea8}.ltoa-deletion{background:#fff0ef;color:#ae3b32}
+                        .ltoa-row-card{border-bottom:1px solid #edf0f2;padding:11px 0}.ltoa-row-card:first-child{padding-top:0}.ltoa-row-card:last-child{border-bottom:0;padding-bottom:0}.ltoa-row-main{display:flex;gap:8px;align-items:baseline;flex-wrap:wrap}.ltoa-row-main strong{font-size:13px}.ltoa-row-main span{font-size:11px;color:#6e7a87}.ltoa-row-meta{font-size:10px;color:#89939d;margin-top:3px}.ltoa-note-text{margin-top:7px;background:#f7f8fa;border-radius:7px;padding:9px 10px;white-space:pre-wrap;line-height:1.45;font-size:12px;color:#3e4954}
+                        .ltoa-two-col{display:grid;grid-template-columns:1fr 1fr;gap:18px}.ltoa-col-title{font-size:12px;font-weight:700;margin:0 0 10px}.ltoa-empty{font-size:12px;color:#8a949e;padding:6px 0}
+                        @media(max-width:1000px){.ltoa-summary{grid-template-columns:repeat(3,1fr)}.ltoa-two-col{grid-template-columns:1fr}.ltoa-main{padding:16px}.ltoa-topbar{padding:0 16px}.ltoa-section-summary{display:none}}
+                    </style>
 
-                        ${aircallStatus?.state === 'error' ? `
-                        <div style="margin:-10px 0 25px;padding:12px 16px;border-radius:8px;background:#ffebee;color:#b71c1c;font-size:12px;">
-                            ⚠️ ${Utils.escapeHtml(aircallStatus.message || 'Échec de la collecte Aircall')}
-                        </div>` : ''}
+                    <div class="ltoa-shell">
+                        <header class="ltoa-topbar">
+                            <div class="ltoa-title">
+                                <h1>Rapport d’activité</h1>
+                                <span>${Utils.escapeHtml(user || '')} · ${Utils.escapeHtml(date || '')}${isPastDate ? ' · rétrospectif' : ''}</span>
+                            </div>
+                            <div class="ltoa-actions">
+                                <button id="ltoa-view-by-client" class="ltoa-btn">Par client</button>
+                                <button id="ltoa-view-chrono" class="ltoa-btn">Chronologie</button>
+                                <button id="ltoa-export-html" class="ltoa-btn">Exporter</button>
+                                <button id="ltoa-close-report" class="ltoa-btn ltoa-close">×</button>
+                            </div>
+                        </header>
 
-                        <!-- Alerte emails en attente -->
-                        ${(pendingEmailsCount || 0) > 0 ? `
-                        <div style="background: linear-gradient(135deg, #ffcccb 0%, #ff6b6b 100%); padding: 15px 20px; border-radius: 10px; margin-bottom: 20px; display: flex; align-items: center; justify-content: space-between; box-shadow: 0 4px 15px rgba(255, 107, 107, 0.3);">
-                            <div style="display: flex; align-items: center; gap: 15px;">
-                                <div style="font-size: 40px;">📬</div>
-                                <div>
-                                    <div style="font-size: 14px; color: #7f0000; font-weight: bold;">Emails assignés à ${Utils.escapeHtml(user)}</div>
-                                </div>
-                            </div>
-                            <div style="font-size: 48px; font-weight: bold; color: #b71c1c;">${pendingEmailsCount || 0}</div>
-                        </div>
-                        ` : ''}
+                        <main class="ltoa-main">
+                            ${notes ? `<div class="ltoa-note"><strong>Note</strong><br>${clean(notes)}</div>` : ''}
+                            ${aircallStatus?.state === 'error' ? `<div class="ltoa-warning">${Utils.escapeHtml(aircallStatus.message || 'Erreur Aircall')}</div>` : ''}
 
-                        <!-- Résumé en cartes -->
-                        <div style="display: grid; grid-template-columns: repeat(5, 1fr); gap: 12px; margin-bottom: 30px;">
-                            <div style="background: linear-gradient(135deg, #e3f2fd 0%, #bbdefb 100%); padding: 15px; border-radius: 10px; text-align: center; box-shadow: 0 2px 10px rgba(25, 118, 210, 0.2);">
-                                <div style="font-size: 28px; font-weight: bold; color: #1976d2;">${emailsSent.length}</div>
-                                <div style="color: #1976d2; font-weight: bold; font-size: 12px;">📤 Emails Envoyés</div>
+                            <div class="ltoa-summary">
+                                <div class="ltoa-kpi"><strong>${emailsSent.length}</strong><span>emails envoyés</span></div>
+                                <div class="ltoa-kpi"><strong>${aircallCalls.length}</strong><span>appels</span></div>
+                                <div class="ltoa-kpi"><strong>${tasksCompleted.length}</strong><span>tâches terminées</span></div>
+                                <div class="ltoa-kpi"><strong>${estimates.length}</strong><span>actions devis</span></div>
+                                <div class="ltoa-kpi"><strong>${policies.length}</strong><span>actions contrats</span></div>
+                                <div class="ltoa-kpi"><strong>${(pendingEmailsCount || 0) + tasksOverdue.length}</strong><span>éléments en attente / retard</span></div>
                             </div>
-                            <div style="background: linear-gradient(135deg, #e8f5e9 0%, #c8e6c9 100%); padding: 15px; border-radius: 10px; text-align: center; box-shadow: 0 2px 10px rgba(56, 142, 60, 0.2);">
-                                <div style="font-size: 28px; font-weight: bold; color: #388e3c;">${emailsAffected.length}</div>
-                                <div style="color: #388e3c; font-weight: bold; font-size: 12px;">📥 Emails Affectés</div>
-                            </div>
-                            <div style="background: linear-gradient(135deg, #fff8e1 0%, #ffecb3 100%); padding: 15px; border-radius: 10px; text-align: center; box-shadow: 0 2px 10px rgba(255, 160, 0, 0.2);">
-                                <div style="font-size: 28px; font-weight: bold; color: #ff8f00;">${(aircallCalls || []).length}</div>
-                                <div style="color: #ff8f00; font-weight: bold; font-size: 11px;">📞 Appels (${aircallInbound}↓ ${aircallOutbound}↑)</div>
-                            </div>
-                            <div style="background: linear-gradient(135deg, #fff3e0 0%, #ffe0b2 100%); padding: 15px; border-radius: 10px; text-align: center; box-shadow: 0 2px 10px rgba(245, 124, 0, 0.2);">
-                                <div style="font-size: 28px; font-weight: bold; color: #f57c00;">${tasksCompleted.length}</div>
-                                <div style="color: #f57c00; font-weight: bold; font-size: 12px;">✅ Tâches Terminées</div>
-                            </div>
-                            <div style="background: linear-gradient(135deg, #ffebee 0%, #ffcdd2 100%); padding: 15px; border-radius: 10px; text-align: center; box-shadow: 0 2px 10px rgba(211, 47, 47, 0.2);">
-                                <div style="font-size: 28px; font-weight: bold; color: #d32f2f;">${tasksOverdue.length}</div>
-                                <div style="color: #d32f2f; font-weight: bold; font-size: 12px;">⚠️ Tâches en Retard</div>
-                            </div>
-                        </div>
-                        <div style="display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; margin-bottom: 30px;">
-                            <div style="background: linear-gradient(135deg, #e0f7fa 0%, #b2ebf2 100%); padding: 15px; border-radius: 10px; text-align: center; box-shadow: 0 2px 10px rgba(0, 151, 167, 0.2);">
-                                <div style="font-size: 28px; font-weight: bold; color: #0097a7;">${estimates.length}</div>
-                                <div style="color: #0097a7; font-weight: bold; font-size: 12px;">📋 Devis</div>
-                            </div>
-                            <div style="background: linear-gradient(135deg, #e8eaf6 0%, #c5cae9 100%); padding: 15px; border-radius: 10px; text-align: center; box-shadow: 0 2px 10px rgba(63, 81, 181, 0.2);">
-                                <div style="font-size: 28px; font-weight: bold; color: #3f51b5;">${policies.length}</div>
-                                <div style="color: #3f51b5; font-weight: bold; font-size: 12px;">📄 Contrats</div>
-                            </div>
-                            <div style="background: linear-gradient(135deg, #fce4ec 0%, #f8bbd9 100%); padding: 15px; border-radius: 10px; text-align: center; box-shadow: 0 2px 10px rgba(194, 24, 91, 0.2);">
-                                <div style="font-size: 28px; font-weight: bold; color: #c2185b;">${claims.length}</div>
-                                <div style="color: #c2185b; font-weight: bold; font-size: 12px;">🚨 Sinistres</div>
-                            </div>
-                            <div style="background: linear-gradient(135deg, #f3e5f5 0%, #e1bee7 100%); padding: 15px; border-radius: 10px; text-align: center; box-shadow: 0 2px 10px rgba(123, 31, 162, 0.2);">
-                                <div style="font-size: 28px; font-weight: bold; color: #7b1fa2;">${logs.length}</div>
-                                <div style="color: #7b1fa2; font-weight: bold; font-size: 12px;">📝 Autres Actions</div>
-                            </div>
-                        </div>
 
-                        <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:10px;margin:0 0 25px;">
-                            <div style="padding:14px;background:#e3f2fd;border-radius:8px;text-align:center;"><strong style="font-size:22px;color:#1565c0;">${uniqueClients}</strong><br><span style="font-size:11px;color:#455a64;">Dossiers/clients traités</span></div>
-                            <div style="padding:14px;background:#e8f5e9;border-radius:8px;text-align:center;"><strong style="font-size:22px;color:#2e7d32;">${estimates.length + policies.length}</strong><br><span style="font-size:11px;color:#455a64;">Actions de production</span></div>
-                            <div style="padding:14px;background:#fff3e0;border-radius:8px;text-align:center;"><strong style="font-size:22px;color:#ef6c00;">${tasksCompleted.length}</strong><br><span style="font-size:11px;color:#455a64;">Suivis finalisés</span></div>
-                            <div style="padding:14px;background:${remainingWork ? '#ffebee' : '#e8f5e9'};border-radius:8px;text-align:center;"><strong style="font-size:22px;color:${remainingWork ? '#c62828' : '#2e7d32'};">${remainingWork}</strong><br><span style="font-size:11px;color:#455a64;">Éléments restant à traiter</span></div>
-                        </div>
+                            ${section(
+                                'estimates',
+                                'Devis',
+                                estimates.length,
+                                `${formatCountLine(estimateCounts)}${assignedEstimates.total ? ` · ${assignedEstimates.total} assignés` : ''}`,
+                                `
+                                    ${renderAssigned()}
+                                    ${estimateSubtypeLine ? `<div class="ltoa-subtypes"><strong>Détail des modifications :</strong> ${Utils.escapeHtml(estimateSubtypeLine)}</div>` : ''}
+                                    ${table(['Date','Type','Client','Devis','Détail'], renderLogRows(estimates, 'Devis'), 'Aucune action sur les devis')}
+                                `
+                            )}
 
-                        <!-- Section 1: Emails Envoyés -->
-                        <div style="margin-bottom: 30px; border: 1px solid #e3f2fd; border-radius: 10px; overflow: hidden;">
-                            <h2 style="background: #1976d2; color: white; margin: 0; padding: 15px 20px; font-size: 16px;">
-                                📤 Emails Envoyés (${emailsSent.length})
-                            </h2>
-                            <div style="padding: 15px;">
-                                ${emailsSent.length > 0 ? `
-                                    <table style="width: 100%; border-collapse: collapse; font-size: 12px;">
-                                        <thead>
-                                            <tr style="background: #e3f2fd;">
-                                                <th style="padding: 10px; text-align: left; border: 1px solid #bbdefb; width: 100px;">Date</th>
-                                                <th style="padding: 10px; text-align: left; border: 1px solid #bbdefb; width: 180px;">Destinataire</th>
-                                                <th style="padding: 10px; text-align: left; border: 1px solid #bbdefb; width: 200px;">Objet</th>
-                                                <th style="padding: 10px; text-align: left; border: 1px solid #bbdefb;">Contenu</th>
-                                                <th style="padding: 10px; text-align: center; border: 1px solid #bbdefb; width: 40px;">PJ</th>
-                                            </tr>
-                                        </thead>
-                                        <tbody>
-                                            ${emailsSent.map((e, idx) => `
-                                                <tr>
-                                                    <td style="padding: 8px; border: 1px solid #e3f2fd; font-size: 11px; vertical-align: top;">${e.date}</td>
-                                                    <td style="padding: 8px; border: 1px solid #e3f2fd; vertical-align: top; word-break: break-word;">
-                                                        <strong>${Utils.escapeHtml(e.toEmail)}</strong>
-                                                    </td>
-                                                    <td style="padding: 8px; border: 1px solid #e3f2fd; font-weight: bold; vertical-align: top; word-break: break-word; max-width: 200px;">
-                                                        ${Utils.escapeHtml(e.subject)}
-                                                    </td>
-                                                    <td style="padding: 8px; border: 1px solid #e3f2fd; vertical-align: top;">
-                                                        ${e.body ? `
-                                                            <div id="email-preview-${uid}-${idx}" style="color: #666; font-size: 11px;">
-                                                                ${Utils.escapeHtml(Utils.truncate(e.body, 150))}
-                                                            </div>
-                                                            ${e.body.length > 150 ? `
-                                                                <div id="email-full-${uid}-${idx}" style="display: none; color: #333; font-size: 11px; white-space: pre-wrap;">
-                                                                    ${Utils.escapeHtml(e.body)}
-                                                                </div>
-                                                                <button onclick="
-                                                                    var preview = document.getElementById('email-preview-${uid}-${idx}');
-                                                                    var full = document.getElementById('email-full-${uid}-${idx}');
-                                                                    if (full.style.display === 'none') {
-                                                                        preview.style.display = 'none';
-                                                                        full.style.display = 'block';
-                                                                        this.textContent = '▲ Réduire';
-                                                                    } else {
-                                                                        preview.style.display = 'block';
-                                                                        full.style.display = 'none';
-                                                                        this.textContent = '▼ Voir tout';
-                                                                    }
-                                                                " style="
-                                                                    background: #e3f2fd;
-                                                                    border: 1px solid #1976d2;
-                                                                    color: #1976d2;
-                                                                    padding: 3px 8px;
-                                                                    border-radius: 3px;
-                                                                    cursor: pointer;
-                                                                    font-size: 10px;
-                                                                    margin-top: 5px;
-                                                                ">▼ Voir tout</button>
-                                                            ` : ''}
-                                                        ` : '<span style="color: #999;">-</span>'}
-                                                    </td>
-                                                    <td style="padding: 8px; border: 1px solid #e3f2fd; text-align: center; vertical-align: top;">${e.hasAttachment ? '📎' : '-'}</td>
-                                                </tr>
-                                            `).join('')}
-                                        </tbody>
-                                    </table>
-                                ` : '<p style="color: #666; font-style: italic; text-align: center; padding: 20px;">Aucun email envoyé aujourd\'hui</p>'}
-                            </div>
-                        </div>
+                            ${section(
+                                'policies',
+                                'Contrats',
+                                policies.length,
+                                formatCountLine(policyCounts),
+                                `
+                                    ${policySubtypeLine ? `<div class="ltoa-subtypes"><strong>Détail des modifications :</strong> ${Utils.escapeHtml(policySubtypeLine)}</div>` : ''}
+                                    ${table(['Date','Type','Client','Contrat','Détail'], renderLogRows(policies, 'Contrat'), 'Aucune action sur les contrats')}
+                                `
+                            )}
 
-                        <!-- Section 2: Emails Affectés -->
-                        <div style="margin-bottom: 30px; border: 1px solid #e8f5e9; border-radius: 10px; overflow: hidden;">
-                            <h2 style="background: #388e3c; color: white; margin: 0; padding: 15px 20px; font-size: 16px;">
-                                📥 Emails Affectés (${emailsAffected.length})
-                            </h2>
-                            <div style="padding: 15px;">
-                                ${emailsAffected.length > 0 ? `
-                                    <table style="width: 100%; border-collapse: collapse; font-size: 12px;">
-                                        <thead>
-                                            <tr style="background: #e8f5e9;">
-                                                <th style="padding: 10px; text-align: left; border: 1px solid #c8e6c9; width: 100px;">Date</th>
-                                                <th style="padding: 10px; text-align: left; border: 1px solid #c8e6c9;">Expéditeur</th>
-                                                <th style="padding: 10px; text-align: left; border: 1px solid #c8e6c9;">Objet</th>
-                                                <th style="padding: 10px; text-align: left; border: 1px solid #c8e6c9; width: 180px;">Affecté à</th>
-                                            </tr>
-                                        </thead>
-                                        <tbody>
-                                            ${emailsAffected.map(e => `
-                                                <tr>
-                                                    <td style="padding: 8px; border: 1px solid #e8f5e9; font-size: 11px;">${e.date}</td>
-                                                    <td style="padding: 8px; border: 1px solid #e8f5e9;">
-                                                        ${Utils.escapeHtml(e.from)}<br>
-                                                        <small style="color:#888;">${Utils.escapeHtml(e.fromEmail || '')}</small>
-                                                    </td>
-                                                    <td style="padding: 8px; border: 1px solid #e8f5e9; font-weight: bold; word-break: break-word;">${Utils.escapeHtml(e.subject)}</td>
-                                                    <td style="padding: 8px; border: 1px solid #e8f5e9; color: #388e3c; font-weight: bold;">${Utils.escapeHtml(e.affectedTo)}</td>
-                                                </tr>
-                                            `).join('')}
-                                        </tbody>
-                                    </table>
-                                ` : '<p style="color: #666; font-style: italic; text-align: center; padding: 20px;">Aucun email affecté aujourd\'hui</p>'}
-                            </div>
-                        </div>
+                            ${section(
+                                'tasks',
+                                'Tâches',
+                                tasksCompleted.length + tasksOverdue.length,
+                                `${tasksCompleted.length} terminées · ${tasksOverdue.length} en retard`,
+                                `
+                                    <div class="ltoa-two-col">
+                                        <div><div class="ltoa-col-title">Terminées aujourd’hui</div>${tasksCompleted.length ? renderTaskCards(tasksCompleted) : '<div class="ltoa-empty">Aucune tâche terminée</div>'}</div>
+                                        <div><div class="ltoa-col-title">En retard</div>${tasksOverdue.length ? renderTaskCards(tasksOverdue, true) : '<div class="ltoa-empty">Aucune tâche en retard</div>'}</div>
+                                    </div>
+                                `,
+                                tasksOverdue.length > 0
+                            )}
 
-                        <!-- Section 3: Appels Téléphoniques Aircall -->
-                        <div style="margin-bottom: 30px; border: 1px solid #fff8e1; border-radius: 10px; overflow: hidden;">
-                            <h2 style="background: #ff8f00; color: white; margin: 0; padding: 15px 20px; font-size: 16px;">
-                                📞 Appels Téléphoniques (${(aircallCalls || []).length}) - ${aircallInbound} entrants / ${aircallOutbound} sortants
-                            </h2>
-                            <div style="padding: 15px;">
-                                ${(aircallCalls || []).length > 0 ? `
-                                    ${(aircallCalls || []).map((c, idx) => `
-                                        <div style="background: #fffbf5; border: 1px solid #ffe0b2; border-radius: 8px; padding: 15px; margin-bottom: 12px;">
-                                            <div style="display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 10px;">
-                                                <div style="display: flex; align-items: center; gap: 12px;">
-                                                    <span style="font-size: 24px;">${c.type === 'sortant' ? '📤' : (c.type === 'entrant' ? '📥' : '📞')}</span>
-                                                    <div>
-                                                        <strong style="color: #ff8f00; font-size: 14px;">${Utils.escapeHtml(c.contact || 'Inconnu')}</strong>
-                                                        <br><span style="color: #666; font-size: 12px;">${c.type === 'sortant' ? 'Appel sortant' : (c.type === 'entrant' ? 'Appel entrant' : 'Appel')}</span>
-                                                    </div>
-                                                </div>
-                                                <div style="text-align: right;">
-                                                    <span style="background: #ff8f00; color: white; padding: 4px 12px; border-radius: 12px; font-size: 12px; font-weight: bold;">
-                                                        ${Utils.escapeHtml(c.duration || '0s')}
-                                                    </span>
-                                                    <br><span style="color: #888; font-size: 11px; margin-top: 4px; display: inline-block;">
-                                                        🕐 ${Utils.escapeHtml(c.time || '')}
-                                                    </span>
-                                                </div>
-                                            </div>
-                                            ${c.mood ? `
-                                                <div style="margin-bottom: 10px;">
-                                                    <span style="
-                                                        display: inline-flex;
-                                                        align-items: center;
-                                                        gap: 6px;
-                                                        padding: 4px 10px;
-                                                        border-radius: 15px;
-                                                        font-size: 12px;
-                                                        background: ${c.mood === 'Positif' ? '#e8f5e9' : (c.mood === 'Négatif' ? '#ffebee' : '#f5f5f5')};
-                                                        color: ${c.mood === 'Positif' ? '#2e7d32' : (c.mood === 'Négatif' ? '#c62828' : '#666')};
-                                                        border: 1px solid ${c.mood === 'Positif' ? '#c8e6c9' : (c.mood === 'Négatif' ? '#ffcdd2' : '#e0e0e0')};
-                                                    ">
-                                                        ${c.mood === 'Positif' ? '😊' : (c.mood === 'Négatif' ? '😠' : '😐')} ${c.mood}
-                                                    </span>
-                                                </div>
-                                            ` : ''}
-                                            ${c.summary ? `
-                                                <div style="background: white; border: 1px solid #ffe0b2; border-radius: 6px; padding: 12px; margin-top: 8px;">
-                                                    <div style="color: #888; font-size: 10px; margin-bottom: 6px; display: flex; align-items: center; gap: 5px;">
-                                                        ✨ Résumé IA
-                                                    </div>
-                                                    <div id="call-preview-${uid}-${idx}" style="color: #333; font-size: 12px; line-height: 1.5;">
-                                                        ${Utils.escapeHtml(Utils.truncate(c.summary, 200))}
-                                                    </div>
-                                                    ${c.summary.length > 200 ? `
-                                                        <div id="call-full-${uid}-${idx}" style="display: none; color: #333; font-size: 12px; line-height: 1.5;">
-                                                            ${Utils.escapeHtml(c.summary)}
-                                                        </div>
-                                                        <button onclick="
-                                                            var preview = document.getElementById('call-preview-${uid}-${idx}');
-                                                            var full = document.getElementById('call-full-${uid}-${idx}');
-                                                            if (full.style.display === 'none') {
-                                                                preview.style.display = 'none';
-                                                                full.style.display = 'block';
-                                                                this.textContent = '▲ Réduire';
-                                                            } else {
-                                                                preview.style.display = 'block';
-                                                                full.style.display = 'none';
-                                                                this.textContent = '▼ Voir tout';
-                                                            }
-                                                        " style="
-                                                            background: #fff8e1;
-                                                            border: 1px solid #ff8f00;
-                                                            color: #ff8f00;
-                                                            padding: 3px 8px;
-                                                            border-radius: 3px;
-                                                            cursor: pointer;
-                                                            font-size: 10px;
-                                                            margin-top: 8px;
-                                                        ">▼ Voir tout</button>
-                                                    ` : ''}
-                                                </div>
-                                            ` : ''}
-                                            ${c.topics?.length ? `
-                                                <div style="margin-top:8px;font-size:12px;color:#6d4c00;">
-                                                    <strong>🏷️ Sujets clés :</strong> ${c.topics.map(topic => Utils.escapeHtml(topic)).join(' · ')}
-                                                </div>
-                                            ` : ''}
-                                            ${c.actionItems?.length ? `
-                                                <div style="margin-top:8px;padding:10px;background:#fff3e0;border-radius:6px;font-size:12px;">
-                                                    <strong>✅ Actions à entreprendre</strong>
-                                                    <ul style="margin:6px 0 0 18px;">${c.actionItems.map(action => `<li>${Utils.escapeHtml(action)}</li>`).join('')}</ul>
-                                                </div>
-                                            ` : ''}
-                                            ${c.transcript ? `
-                                                <details style="margin-top:8px;background:white;border:1px solid #ffe0b2;border-radius:6px;padding:10px;">
-                                                    <summary style="cursor:pointer;color:#e65100;font-size:12px;font-weight:bold;">🗣️ Voir la transcription complète</summary>
-                                                    <div style="margin-top:8px;white-space:pre-wrap;font-size:11px;line-height:1.5;max-height:320px;overflow:auto;">${Utils.escapeHtml(c.transcript)}</div>
-                                                </details>
-                                            ` : ''}
-                                        </div>
-                                    `).join('')}
-                                ` : '<p style="color: #666; font-style: italic; text-align: center; padding: 20px;">Aucun appel collecté - <a href="https://dashboard.aircall.io/conversations" target="_blank" style="color: #ff8f00;">Ouvrir Aircall</a></p>'}
-                            </div>
-                        </div>
+                            ${section(
+                                'emails',
+                                'Emails',
+                                emailsSent.length + emailsAffected.length,
+                                `${emailsSent.length} envoyés · ${emailsAffected.length} affectés · ${pendingEmailsCount || 0} en attente`,
+                                `
+                                    <div class="ltoa-two-col">
+                                        <div><div class="ltoa-col-title">Envoyés</div>${table(['Heure','Client / destinataire','Objet'], emailRows, 'Aucun email envoyé')}</div>
+                                        <div><div class="ltoa-col-title">Affectés / reçus</div>${table(['Heure','Client / expéditeur','Objet'], affectedRows, 'Aucun email affecté')}</div>
+                                    </div>
+                                `
+                            )}
 
-                        <!-- Section 4: Tâches Terminées -->
-                        <div style="margin-bottom: 30px; border: 1px solid #fff3e0; border-radius: 10px; overflow: hidden;">
-                            <h2 style="background: #f57c00; color: white; margin: 0; padding: 15px 20px; font-size: 16px;">
-                                ✅ Tâches Terminées (${tasksCompleted.length})
-                            </h2>
-                            <div style="padding: 15px;">
-                                ${tasksCompleted.length > 0 ? `
-                                    ${tasksCompleted.map((t, idx) => `
-                                        <div style="background: #fff8f0; border: 1px solid #ffe0b2; border-radius: 8px; padding: 15px; margin-bottom: 10px;">
-                                            <div style="display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 10px;">
-                                                <div>
-                                                    <strong style="color: #f57c00; font-size: 14px;">${t.isPriority ? '🔴 ' : ''}${Utils.escapeHtml(t.title)}</strong>
-                                                    <br><span style="color: #666; font-size: 12px;">Client: ${Utils.escapeHtml(t.client)}</span>
-                                                </div>
-                                                <span style="background: #f57c00; color: white; padding: 3px 10px; border-radius: 12px; font-size: 11px;">
-                                                    ${t.closedTime ? `⏰ ${t.closedTime}` : `Terminée le ${t.completedDate}`}
-                                                </span>
-                                            </div>
-                                            ${t.content ? `
-                                                <div style="background: white; border: 1px solid #ffe0b2; border-radius: 5px; padding: 10px; margin-top: 10px;">
-                                                    <div style="color: #888; font-size: 10px; margin-bottom: 5px;">📝 Contenu de la tâche:</div>
-                                                    <div id="task-preview-${uid}-${idx}" style="color: #333; font-size: 12px;">
-                                                        ${Utils.escapeHtml(Utils.truncate(t.content, 200))}
-                                                    </div>
-                                                    ${t.content.length > 200 ? `
-                                                        <div id="task-full-${uid}-${idx}" style="display: none; color: #333; font-size: 12px; white-space: pre-wrap;">
-                                                            ${Utils.escapeHtml(t.content)}
-                                                        </div>
-                                                        <button onclick="
-                                                            var preview = document.getElementById('task-preview-${uid}-${idx}');
-                                                            var full = document.getElementById('task-full-${uid}-${idx}');
-                                                            if (full.style.display === 'none') {
-                                                                preview.style.display = 'none';
-                                                                full.style.display = 'block';
-                                                                this.textContent = '▲ Réduire';
-                                                            } else {
-                                                                preview.style.display = 'block';
-                                                                full.style.display = 'none';
-                                                                this.textContent = '▼ Voir tout';
-                                                            }
-                                                        " style="
-                                                            background: #fff3e0;
-                                                            border: 1px solid #f57c00;
-                                                            color: #f57c00;
-                                                            padding: 3px 8px;
-                                                            border-radius: 3px;
-                                                            cursor: pointer;
-                                                            font-size: 10px;
-                                                            margin-top: 5px;
-                                                        ">▼ Voir tout</button>
-                                                    ` : ''}
-                                                </div>
-                                            ` : ''}
-                                            <div style="color: #999; font-size: 11px; margin-top: 8px;">
-                                                Créée par ${Utils.escapeHtml(t.createdBy)} le ${t.createdDate}
-                                            </div>
-                                        </div>
-                                    `).join('')}
-                                ` : '<p style="color: #666; font-style: italic; text-align: center; padding: 20px;">Aucune tâche terminée aujourd\'hui</p>'}
-                            </div>
-                        </div>
+                            ${section(
+                                'calls',
+                                'Appels',
+                                aircallCalls.length,
+                                `${aircallCalls.filter(c => c.type === 'entrant').length} entrants · ${aircallCalls.filter(c => c.type === 'sortant').length} sortants`,
+                                table(['Heure','Sens','Contact','Durée'], callRows, 'Aucun appel')
+                            )}
 
-                        <!-- Section 4: Tâches en Retard -->
-                        <div style="margin-bottom: 30px; border: 1px solid #ffebee; border-radius: 10px; overflow: hidden;">
-                            <h2 style="background: #d32f2f; color: white; margin: 0; padding: 15px 20px; font-size: 16px;">
-                                ⚠️ Tâches en Retard (${tasksOverdue.length})
-                            </h2>
-                            <div style="padding: 15px;">
-                                ${tasksOverdue.length > 0 ? `
-                                    ${tasksOverdue.map((t, idx) => `
-                                        <div style="background: ${t.daysOverdue > 30 ? '#ffcdd2' : t.daysOverdue > 7 ? '#ffe0b2' : '#fff8e1'}; border: 1px solid ${t.daysOverdue > 30 ? '#ef9a9a' : t.daysOverdue > 7 ? '#ffcc80' : '#fff59d'}; border-radius: 8px; padding: 15px; margin-bottom: 10px;">
-                                            <div style="display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 10px;">
-                                                <div>
-                                                    <strong style="color: ${t.daysOverdue > 30 ? '#b71c1c' : t.daysOverdue > 7 ? '#e65100' : '#f57c00'}; font-size: 14px;">
-                                                        ${t.isPriority ? '🔴 ' : ''}${Utils.escapeHtml(t.title)}
-                                                    </strong>
-                                                    <br><span style="color: #666; font-size: 12px;">Client: ${Utils.escapeHtml(t.client)}</span>
-                                                </div>
-                                                <div style="text-align: right;">
-                                                    <span style="background: ${t.daysOverdue > 30 ? '#b71c1c' : t.daysOverdue > 7 ? '#e65100' : '#f57c00'}; color: white; padding: 3px 10px; border-radius: 12px; font-size: 11px; font-weight: bold;">
-                                                        ${t.daysOverdue} jour${t.daysOverdue > 1 ? 's' : ''} de retard
-                                                    </span>
-                                                    <br><span style="color: #666; font-size: 11px; margin-top: 3px; display: inline-block;">Échéance: ${t.dueDate}</span>
-                                                </div>
-                                            </div>
-                                            ${t.content ? `
-                                                <div style="background: rgba(255,255,255,0.7); border-radius: 5px; padding: 10px; margin-top: 10px;">
-                                                    <div style="color: #888; font-size: 10px; margin-bottom: 5px;">📝 Contenu de la tâche:</div>
-                                                    <div id="overdue-preview-${uid}-${idx}" style="color: #333; font-size: 12px;">
-                                                        ${Utils.escapeHtml(Utils.truncate(t.content, 200))}
-                                                    </div>
-                                                    ${t.content.length > 200 ? `
-                                                        <div id="overdue-full-${uid}-${idx}" style="display: none; color: #333; font-size: 12px; white-space: pre-wrap;">
-                                                            ${Utils.escapeHtml(t.content)}
-                                                        </div>
-                                                        <button onclick="
-                                                            var preview = document.getElementById('overdue-preview-${uid}-${idx}');
-                                                            var full = document.getElementById('overdue-full-${uid}-${idx}');
-                                                            if (full.style.display === 'none') {
-                                                                preview.style.display = 'none';
-                                                                full.style.display = 'block';
-                                                                this.textContent = '▲ Réduire';
-                                                            } else {
-                                                                preview.style.display = 'block';
-                                                                full.style.display = 'none';
-                                                                this.textContent = '▼ Voir tout';
-                                                            }
-                                                        " style="
-                                                            background: rgba(255,255,255,0.8);
-                                                            border: 1px solid #d32f2f;
-                                                            color: #d32f2f;
-                                                            padding: 3px 8px;
-                                                            border-radius: 3px;
-                                                            cursor: pointer;
-                                                            font-size: 10px;
-                                                            margin-top: 5px;
-                                                        ">▼ Voir tout</button>
-                                                    ` : ''}
-                                                </div>
-                                            ` : ''}
-                                        </div>
-                                    `).join('')}
-                                ` : '<p style="color: #388e3c; text-align: center; padding: 20px; font-weight: bold;">🎉 Aucune tâche en retard ! Bravo !</p>'}
-                            </div>
-                        </div>
+                            ${section(
+                                'claims',
+                                'Sinistres',
+                                claims.length,
+                                formatCountLine(claimCounts),
+                                `
+                                    ${claimSubtypeLine ? `<div class="ltoa-subtypes"><strong>Détail des modifications :</strong> ${Utils.escapeHtml(claimSubtypeLine)}</div>` : ''}
+                                    ${table(['Date','Type','Client','Sinistre','Détail'], renderLogRows(claims, 'Sinistre'), 'Aucune action sur les sinistres')}
+                                `
+                            )}
 
-                        <!-- Section 5: Devis -->
-                        <div style="margin-bottom: 30px; border: 1px solid #e0f7fa; border-radius: 10px; overflow: hidden;">
-                            <h2 style="background: #0097a7; color: white; margin: 0; padding: 15px 20px; font-size: 16px;">
-                                📋 Devis (${estimates.length})
-                            </h2>
-                            <div style="padding: 15px;">
-                                ${estimates.length > 0 ? `
-                                    ${estimates.map(log => `
-                                        <div style="background: #e0f7fa; border: 1px solid #b2ebf2; border-radius: 8px; padding: 15px; margin-bottom: 10px;">
-                                            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px;">
-                                                <strong style="color: #0097a7; font-size: 14px;">
-                                                    ${log.action}
-                                                </strong>
-                                                <span style="color: #00acc1; font-size: 12px;">${log.date}</span>
-                                            </div>
-                                            <div style="margin-bottom: 10px; color: #333; font-size: 13px;">
-                                                <strong>Devis:</strong> ${Utils.escapeHtml(log.entityName)}
-                                                <span style="color: #999; font-size: 11px;">(N° ${log.entityId})</span>
-                                            </div>
-                                            ${log.changes.length > 0 ? `
-                                                <table style="width: 100%; border-collapse: collapse; font-size: 12px; background: white; border-radius: 5px; overflow: hidden;">
-                                                    <thead>
-                                                        <tr>
-                                                            <th style="padding: 8px; text-align: left; background: #b2ebf2; border: 1px solid #80deea;">Champ</th>
-                                                            <th style="padding: 8px; text-align: left; background: #ffcdd2; border: 1px solid #ef9a9a;">Avant</th>
-                                                            <th style="padding: 8px; text-align: left; background: #c8e6c9; border: 1px solid #a5d6a7;">Après</th>
-                                                        </tr>
-                                                    </thead>
-                                                    <tbody>
-                                                        ${log.changes.map(c => `
-                                                            <tr>
-                                                                <td style="padding: 6px; border: 1px solid #b2ebf2; font-weight: bold;">${Utils.escapeHtml(c.field)}</td>
-                                                                <td style="padding: 6px; border: 1px solid #ffcdd2; color: #c62828;">${Utils.escapeHtml(c.oldValue)}</td>
-                                                                <td style="padding: 6px; border: 1px solid #c8e6c9; color: #2e7d32;">${Utils.escapeHtml(c.newValue)}</td>
-                                                            </tr>
-                                                        `).join('')}
-                                                    </tbody>
-                                                </table>
-                                            ` : '<p style="color: #666; font-size: 12px; margin: 0;">Création du devis</p>'}
-                                        </div>
-                                    `).join('')}
-                                ` : '<p style="color: #666; font-style: italic; text-align: center; padding: 20px;">Aucun devis créé ou modifié aujourd\'hui</p>'}
-                            </div>
-                        </div>
-
-                        <!-- Section 6: Contrats -->
-                        <div style="margin-bottom: 30px; border: 1px solid #e8eaf6; border-radius: 10px; overflow: hidden;">
-                            <h2 style="background: #3f51b5; color: white; margin: 0; padding: 15px 20px; font-size: 16px;">
-                                📄 Contrats (${policies.length})
-                            </h2>
-                            <div style="padding: 15px;">
-                                ${policies.length > 0 ? `
-                                    ${policies.map(log => `
-                                        <div style="background: #e8eaf6; border: 1px solid #c5cae9; border-radius: 8px; padding: 15px; margin-bottom: 10px;">
-                                            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px;">
-                                                <strong style="color: #3f51b5; font-size: 14px;">
-                                                    ${log.action}
-                                                </strong>
-                                                <span style="color: #5c6bc0; font-size: 12px;">${log.date}</span>
-                                            </div>
-                                            <div style="margin-bottom: 10px; color: #333; font-size: 13px;">
-                                                <strong>Contrat:</strong> ${Utils.escapeHtml(log.entityName)}
-                                                <span style="color: #999; font-size: 11px;">(N° ${log.entityId})</span>
-                                            </div>
-                                            ${log.changes.length > 0 ? `
-                                                <table style="width: 100%; border-collapse: collapse; font-size: 12px; background: white; border-radius: 5px; overflow: hidden;">
-                                                    <thead>
-                                                        <tr>
-                                                            <th style="padding: 8px; text-align: left; background: #c5cae9; border: 1px solid #9fa8da;">Champ</th>
-                                                            <th style="padding: 8px; text-align: left; background: #ffcdd2; border: 1px solid #ef9a9a;">Avant</th>
-                                                            <th style="padding: 8px; text-align: left; background: #c8e6c9; border: 1px solid #a5d6a7;">Après</th>
-                                                        </tr>
-                                                    </thead>
-                                                    <tbody>
-                                                        ${log.changes.map(c => `
-                                                            <tr>
-                                                                <td style="padding: 6px; border: 1px solid #c5cae9; font-weight: bold;">${Utils.escapeHtml(c.field)}</td>
-                                                                <td style="padding: 6px; border: 1px solid #ffcdd2; color: #c62828;">${Utils.escapeHtml(c.oldValue)}</td>
-                                                                <td style="padding: 6px; border: 1px solid #c8e6c9; color: #2e7d32;">${Utils.escapeHtml(c.newValue)}</td>
-                                                            </tr>
-                                                        `).join('')}
-                                                    </tbody>
-                                                </table>
-                                            ` : '<p style="color: #666; font-size: 12px; margin: 0;">Création du contrat</p>'}
-                                        </div>
-                                    `).join('')}
-                                ` : '<p style="color: #666; font-style: italic; text-align: center; padding: 20px;">Aucun contrat créé ou modifié aujourd\'hui</p>'}
-                            </div>
-                        </div>
-
-                        <!-- Section 7: Sinistres -->
-                        <div style="margin-bottom: 30px; border: 1px solid #fce4ec; border-radius: 10px; overflow: hidden;">
-                            <h2 style="background: #c2185b; color: white; margin: 0; padding: 15px 20px; font-size: 16px;">
-                                🚨 Sinistres (${claims.length})
-                            </h2>
-                            <div style="padding: 15px;">
-                                ${claims.length > 0 ? `
-                                    ${claims.map(log => `
-                                        <div style="background: #fce4ec; border: 1px solid #f8bbd9; border-radius: 8px; padding: 15px; margin-bottom: 10px;">
-                                            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px;">
-                                                <strong style="color: #c2185b; font-size: 14px;">
-                                                    ${log.action}
-                                                </strong>
-                                                <span style="color: #d81b60; font-size: 12px;">${log.date}</span>
-                                            </div>
-                                            <div style="margin-bottom: 10px; color: #333; font-size: 13px;">
-                                                <strong>Sinistre:</strong> ${Utils.escapeHtml(log.entityName)}
-                                                <span style="color: #999; font-size: 11px;">(N° ${log.entityId})</span>
-                                            </div>
-                                            ${log.changes.length > 0 ? `
-                                                <table style="width: 100%; border-collapse: collapse; font-size: 12px; background: white; border-radius: 5px; overflow: hidden;">
-                                                    <thead>
-                                                        <tr>
-                                                            <th style="padding: 8px; text-align: left; background: #f8bbd9; border: 1px solid #f48fb1;">Champ</th>
-                                                            <th style="padding: 8px; text-align: left; background: #ffcdd2; border: 1px solid #ef9a9a;">Avant</th>
-                                                            <th style="padding: 8px; text-align: left; background: #c8e6c9; border: 1px solid #a5d6a7;">Après</th>
-                                                        </tr>
-                                                    </thead>
-                                                    <tbody>
-                                                        ${log.changes.map(c => `
-                                                            <tr>
-                                                                <td style="padding: 6px; border: 1px solid #f8bbd9; font-weight: bold;">${Utils.escapeHtml(c.field)}</td>
-                                                                <td style="padding: 6px; border: 1px solid #ffcdd2; color: #c62828;">${Utils.escapeHtml(c.oldValue)}</td>
-                                                                <td style="padding: 6px; border: 1px solid #c8e6c9; color: #2e7d32;">${Utils.escapeHtml(c.newValue)}</td>
-                                                            </tr>
-                                                        `).join('')}
-                                                    </tbody>
-                                                </table>
-                                            ` : '<p style="color: #666; font-size: 12px; margin: 0;">Création du sinistre</p>'}
-                                        </div>
-                                    `).join('')}
-                                ` : '<p style="color: #666; font-style: italic; text-align: center; padding: 20px;">Aucun sinistre créé ou modifié aujourd\'hui</p>'}
-                            </div>
-                        </div>
-
-                        <!-- Section 8: Journalisation (Vulgarisée) - RÉDUIT PAR DÉFAUT -->
-                        <div style="margin-bottom: 30px; border: 1px solid #f3e5f5; border-radius: 10px; overflow: hidden;">
-                            <details>
-                                <summary style="background: #7b1fa2; color: white; margin: 0; padding: 15px 20px; font-size: 16px; cursor: pointer; list-style: none; display: flex; justify-content: space-between; align-items: center; user-select: none;">
-                                    <span>📝 Actions sur Fiches Clients (${logs.length})</span>
-                                    <span style="font-size: 11px; background: rgba(255,255,255,0.2); padding: 4px 12px; border-radius: 15px;">▶ Cliquer pour voir</span>
-                                </summary>
-                                <div style="padding: 15px; max-height: 600px; overflow-y: auto;">
-                                ${logs.length > 0 ? `
-                                    ${logs.map(log => {
-                                        // Vulgariser l'entrée
-                                        const vulgarized = LogVulgarizer.vulgarize(log);
-
-                                        // Générer le lien vers l'entité
-                                        let entityLink = '#';
-                                        let entityIcon = '📄';
-                                        if (log.tableRaw) {
-                                            const tableType = log.tableRaw.toLowerCase();
-                                            if (tableType.includes('client')) {
-                                                entityLink = `https://courtage.modulr.fr/fr/scripts/clients/clients_card.php?id=${log.entityId}`;
-                                                entityIcon = '👤';
-                                            } else if (tableType.includes('task') || tableType.includes('tâche')) {
-                                                entityLink = `https://courtage.modulr.fr/fr/scripts/Tasks/TasksCard.php?id=${log.entityId}`;
-                                                entityIcon = '✅';
-                                            } else if (tableType.includes('email')) {
-                                                entityLink = `https://courtage.modulr.fr/fr/scripts/sent_emails/sent_emails_view.php?id=${log.entityId}`;
-                                                entityIcon = '📧';
-                                            } else if (tableType.includes('estimate') || tableType.includes('devis')) {
-                                                entityLink = `https://courtage.modulr.fr/fr/scripts/estimates/estimates_card.php?id=${log.entityId}`;
-                                                entityIcon = '📋';
-                                            } else if (tableType.includes('polic') || tableType.includes('contrat')) {
-                                                entityLink = `https://courtage.modulr.fr/fr/scripts/policies/policies_card.php?id=${log.entityId}`;
-                                                entityIcon = '📄';
-                                            } else if (tableType.includes('claim') || tableType.includes('sinistre')) {
-                                                entityLink = `https://courtage.modulr.fr/fr/scripts/claims/claims_card.php?id=${log.entityId}`;
-                                                entityIcon = '🚨';
-                                            }
-                                        }
-
-                                        return `
-                                        <div style="background: #faf5fc; border: 1px solid #e1bee7; border-radius: 8px; padding: 15px; margin-bottom: 15px;">
-                                            <div style="display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 8px;">
-                                                <div>
-                                                    <strong style="color: #7b1fa2; font-size: 14px;">
-                                                        ${vulgarized.title}
-                                                    </strong>
-                                                    ${vulgarized.summary ? `<br><span style="color: #666; font-size: 12px;">${vulgarized.summary}</span>` : ''}
-                                                </div>
-                                                <span style="color: #9575cd; font-size: 11px; white-space: nowrap;">${log.date}</span>
-                                            </div>
-                                            <div style="margin-bottom: 10px;">
-                                                <a href="${entityLink}" target="_blank" style="color: #7b1fa2; text-decoration: none; font-size: 13px;">
-                                                    ${entityIcon} ${Utils.escapeHtml(log.entityName || 'Voir la fiche')}
-                                                </a>
-                                            </div>
-                                            ${vulgarized.details && vulgarized.details.length > 0 ? `
-                                                <details style="margin-top: 10px;">
-                                                    <summary style="cursor: pointer; color: #7b1fa2; font-size: 12px; padding: 5px 0;">
-                                                        📋 Voir les ${vulgarized.details.length} modification(s)
-                                                    </summary>
-                                                    <table style="width: 100%; border-collapse: collapse; font-size: 11px; background: white; border-radius: 5px; overflow: hidden; margin-top: 8px;">
-                                                        <thead>
-                                                            <tr>
-                                                                <th style="padding: 6px; text-align: left; background: #e1bee7; border: 1px solid #ce93d8; width: 30%;">Champ</th>
-                                                                <th style="padding: 6px; text-align: left; background: #ffcdd2; border: 1px solid #ef9a9a; width: 35%;">Avant</th>
-                                                                <th style="padding: 6px; text-align: left; background: #c8e6c9; border: 1px solid #a5d6a7; width: 35%;">Après</th>
-                                                            </tr>
-                                                        </thead>
-                                                        <tbody>
-                                                            ${vulgarized.details.map(c => `
-                                                                <tr>
-                                                                    <td style="padding: 5px; border: 1px solid #e1bee7; font-weight: bold;">${Utils.escapeHtml(c.field)}</td>
-                                                                    <td style="padding: 5px; border: 1px solid #ffcdd2; color: #c62828;">${Utils.escapeHtml(String(c.oldValue || '-'))}</td>
-                                                                    <td style="padding: 5px; border: 1px solid #c8e6c9; color: #2e7d32;">${Utils.escapeHtml(String(c.newValue || '-'))}</td>
-                                                                </tr>
-                                                            `).join('')}
-                                                        </tbody>
-                                                    </table>
-                                                </details>
-                                            ` : ''}
-                                        </div>
-                                    `;
-                                    }).join('')}
-                                ` : '<p style="color: #666; font-style: italic; text-align: center; padding: 20px;">Aucune action sur les fiches aujourd\'hui</p>'}
-                                </div>
-                            </details>
-                        </div>
-
-                        ${notes ? `
-                        <div style="margin:25px 0;padding:18px;background:#fffde7;border-left:5px solid #f9a825;border-radius:8px;">
-                            <strong style="color:#6d4c00;">🗒️ Notes et précisions</strong>
-                            <div style="margin-top:10px;white-space:pre-wrap;color:#4e342e;line-height:1.55;">${Utils.escapeHtml(notes)}</div>
-                        </div>` : ''}
-
-                        <!-- Footer -->
-                        <div style="text-align: center; color: #999; padding-top: 20px; border-top: 1px solid #eee; font-size: 12px;">
-                            <p>📊 Rapport généré automatiquement par LTOA Modulr Script v4</p>
-                            <p>${new Date().toLocaleString('fr-FR')}</p>
-                        </div>
+                            ${section(
+                                'other',
+                                'Autres actions',
+                                logs.length,
+                                logs.length ? 'Journalisation complémentaire' : 'Aucune',
+                                table(['Date','Rubrique','Élément','Détail'], otherRows, 'Aucune autre action utile')
+                            )}
+                        </main>
                     </div>
-                </div>
-            `;
+                </div>`;
         },
 
         show() {
@@ -5442,6 +5147,10 @@
             const pendingEmailsCount = await PendingEmailsCollector.collect(connectedUser, loader.updateStatus);
             await Utils.delay(CONFIG.DELAY_BETWEEN_REQUESTS);
 
+            // Charge actuelle en devis depuis le tableau de bord
+            const assignedEstimates = await EstimatesAssignmentCollector.collect(userId, loader.updateStatus);
+            await Utils.delay(CONFIG.DELAY_BETWEEN_REQUESTS);
+
             // Étape 3: Appels Aircall
             loader.update(3, 20, 'Collecte des appels Aircall...');
             let aircallCalls = [];
@@ -5506,6 +5215,7 @@
                 emailsSent: resolvedData.emailsSent,
                 emailsAffected: resolvedData.emailsAffected,
                 pendingEmailsCount: pendingEmailsCount, // Nombre d'emails en attente
+                assignedEstimates: assignedEstimates, // Devis actuellement assignés + répartition par état
                 aircallCalls: aircallCalls, // Ajouter les appels Aircall
                 tasksCompleted: resolvedData.tasksCompleted,
                 tasksOverdue: resolvedData.tasksOverdue,
