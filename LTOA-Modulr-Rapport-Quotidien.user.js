@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         LTOA Modulr - Rapport Quotidien
 // @namespace    https://github.com/BiggerThanTheMall/tampermonkey-ltoa
-// @version      5.6.0
+// @version      5.6.1
 // @description  Génération automatique du rapport d’activité quotidien dans Modulr
 // @author       LTOA Assurances
 // @match        https://courtage.modulr.fr/*
@@ -2772,26 +2772,42 @@
                 autre: 'Autre modification'
             };
         
-            const productLabel = log => {
+            const contractTypeLabel = log => {
+                const entityName = Utils.cleanRichText(log?.entityName || '');
+
+                // Le journal Modulr fournit déjà un libellé exploitable :
+                // "n° 4291 du 30/09/2026 - Automobile"
+                // "n° 4324 du 06/10/2026 - Rapatriement (GRC)"
+                if (entityName) {
+                    const match = entityName.match(/^\s*n[°ºo]?\s*\d+\s+du\s+\d{1,2}\/\d{1,2}\/\d{4}\s*-\s*(.+?)\s*$/i);
+                    if (match && match[1]) return match[1].trim();
+
+                    const separator = entityName.lastIndexOf(' - ');
+                    if (separator >= 0 && separator + 3 < entityName.length) {
+                        return entityName.slice(separator + 3).trim();
+                    }
+                }
+
+                // Fallback seulement si le nom de fiche ne contient pas le type.
                 const changes = log?.changes || [];
                 const productChange = changes.find(change => change.fieldRaw === 'product_type_id')
                     || changes.find(change => change.fieldRaw === 'product_id');
                 if (!productChange) return '—';
+
                 const value = productChange.newValue || productChange.newValueRaw || productChange.oldValue || productChange.oldValueRaw || '';
                 return value && value !== '-' ? Utils.translateValue(value) : '—';
             };
         
-            const renderLogRows = (items, entityLabel) => (items || []).map(log => {
+            const renderLogRows = items => (items || []).map(log => {
                 const classification = ActivityDictionary.classify(log);
                 const client = log.clientName || (log.clientId ? `Client n° ${log.clientId}` : '—');
-                const ref = `${entityLabel} n° ${log.entityId || '—'}`;
+
                 return `
                     <tr data-kind="${classification.kind}" data-subtype="${classification.subtype || ''}">
                         <td class="ltoa-time">${Utils.escapeHtml(log.date || '')}</td>
                         <td><span class="ltoa-tag ltoa-${classification.kind}">${Utils.escapeHtml(classification.label)}</span></td>
                         <td class="ltoa-client">${Utils.escapeHtml(client)}</td>
-                        <td>${Utils.escapeHtml(productLabel(log))}</td>
-                        <td class="ltoa-ref">${Utils.escapeHtml(ref)}</td>
+                        <td class="ltoa-contract-type">${Utils.escapeHtml(contractTypeLabel(log))}</td>
                         <td>${Utils.escapeHtml(ActivityDictionary.summarize(log))}</td>
                     </tr>`;
             }).join('');
@@ -3012,7 +3028,7 @@
                         .ltoa-section>summary{list-style:none;cursor:pointer;display:grid;grid-template-columns:minmax(160px,1fr) auto 20px;align-items:center;gap:16px;padding:14px 16px;min-height:58px}.ltoa-section>summary::-webkit-details-marker{display:none}.ltoa-section-name{display:flex;align-items:center;gap:8px}.ltoa-section-name strong{font-size:14px}.ltoa-badge{background:#f0f3f6;border-radius:999px;padding:3px 8px;font-size:10px;color:#536170}.ltoa-section-summary{display:flex;justify-content:flex-end;gap:7px;flex-wrap:wrap}.ltoa-chevron{color:#98a2b3;transition:.18s}.ltoa-section[open] .ltoa-chevron{transform:rotate(180deg)}.ltoa-section[open]>summary{border-bottom:1px solid #edf0f3}.ltoa-section-body{padding:15px 16px 17px}
                         .ltoa-metric-btn{border:1px solid #e5e9ee;background:#fff;border-radius:999px;padding:6px 9px;font-size:10px;color:#5b6674;cursor:pointer}.ltoa-metric-btn:hover{border-color:#cddbf6;background:#f7faff;color:#2456a6}.ltoa-metric-btn b{color:#111827;margin-right:3px}
                         .ltoa-breakdown{background:#f8fafc;border:1px solid #edf0f3;border-radius:14px;padding:12px;margin-bottom:12px}.ltoa-breakdown-label{font-size:9px;color:#98a2b3;text-transform:uppercase;letter-spacing:.08em;margin-bottom:8px}.ltoa-breakdown-grid{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:8px}.ltoa-subtype-btn{border:1px solid #e7ebef;background:#fff;border-radius:12px;padding:10px;text-align:left;cursor:pointer}.ltoa-subtype-btn:hover{border-color:#cedcf7;box-shadow:0 7px 18px rgba(37,99,235,.06)}.ltoa-subtype-btn b{display:block;font-size:16px}.ltoa-subtype-btn span{display:block;font-size:10px;color:#475467;margin:2px 0 6px}.ltoa-subtype-btn small{font-size:9px;color:#2563eb}
-                        .ltoa-table-wrap{overflow:auto;border:1px solid #e5e9ee;border-radius:12px}.ltoa-table{width:100%;border-collapse:collapse;font-size:11px;background:#fff;min-width:820px}.ltoa-table th{background:#f8f9fb;text-align:left;font-weight:700;color:#687584;padding:9px 10px;border-bottom:1px solid #e7ebef;white-space:nowrap;text-transform:uppercase;font-size:9px;letter-spacing:.04em}.ltoa-table td{padding:10px;border-bottom:1px solid #eef1f3;vertical-align:top}.ltoa-table tr:last-child td{border-bottom:0}.ltoa-time,.ltoa-ref{white-space:nowrap;color:#6d7986}.ltoa-client{font-weight:700}.ltoa-tag{display:inline-block;border-radius:999px;padding:3px 7px;font-size:9px;font-weight:700}.ltoa-creation{background:#eaf7ef;color:#267344}.ltoa-update{background:#eef3ff;color:#315ea8}.ltoa-deletion{background:#fff0ef;color:#ae3b32}
+                        .ltoa-table-wrap{overflow:auto;border:1px solid #e5e9ee;border-radius:12px}.ltoa-table{width:100%;border-collapse:collapse;font-size:12px;background:#fff;min-width:760px}.ltoa-table th{background:#f8f9fb;text-align:left;font-weight:700;color:#687584;padding:10px 11px;border-bottom:1px solid #e7ebef;white-space:nowrap;text-transform:uppercase;font-size:10px;letter-spacing:.035em}.ltoa-table td{padding:11px;border-bottom:1px solid #eef1f3;vertical-align:top}.ltoa-table tr:last-child td{border-bottom:0}.ltoa-time{white-space:nowrap;color:#6d7986}.ltoa-client{font-weight:700}.ltoa-contract-type{font-weight:650;color:#344054}.ltoa-tag{display:inline-block;border-radius:999px;padding:3px 7px;font-size:9px;font-weight:700}.ltoa-creation{background:#eaf7ef;color:#267344}.ltoa-update{background:#eef3ff;color:#315ea8}.ltoa-deletion{background:#fff0ef;color:#ae3b32}
                         .ltoa-row-card{border-bottom:1px solid #edf0f2;padding:11px 0}.ltoa-row-card:first-child{padding-top:0}.ltoa-row-card:last-child{border-bottom:0;padding-bottom:0}.ltoa-row-main{display:flex;gap:8px;align-items:baseline;flex-wrap:wrap}.ltoa-row-main strong{font-size:12px}.ltoa-row-main span{font-size:10px;color:#6e7a87}.ltoa-row-meta{font-size:10px;color:#89939d;margin-top:3px}.ltoa-note-text{margin-top:7px;background:#f7f8fa;border-radius:7px;padding:9px 10px;white-space:pre-wrap;line-height:1.45;font-size:11px;color:#3e4954}.ltoa-empty,.ltoa-muted{font-size:11px;color:#8a949e}
                         .ltoa-detail-backdrop{display:none;position:fixed;inset:0;z-index:2147483647;background:rgba(15,23,42,.28);backdrop-filter:blur(6px);align-items:center;justify-content:center;padding:24px}.ltoa-detail-backdrop.show{display:flex}.ltoa-detail-card{width:min(1080px,96vw);max-height:84vh;overflow:auto;background:#fff;border-radius:22px;padding:18px;box-shadow:0 30px 90px rgba(15,23,42,.22)}.ltoa-detail-head{display:flex;align-items:center;justify-content:space-between;gap:14px;margin-bottom:14px}.ltoa-detail-head h3{margin:0;font-size:18px}.ltoa-detail-close{border:0;background:#f1f4f7;border-radius:999px;width:34px;height:34px;cursor:pointer;font-size:18px}
                         @media(max-width:1050px){.ltoa-shell{grid-template-columns:1fr}.ltoa-sidebar{display:none}.ltoa-work-grid{grid-template-columns:1fr}.ltoa-breakdown-grid{grid-template-columns:1fr 1fr}.ltoa-main{padding:16px}.ltoa-topbar{padding:12px 16px}.ltoa-section-summary{justify-content:flex-start}.ltoa-section>summary{grid-template-columns:1fr 20px}.ltoa-section-summary{display:none}}
@@ -3083,7 +3099,7 @@
                                     `
                                         ${renderActionFilters('estimates', estimateCounts)}
                                         ${renderSubtypeButtons('estimates', estimateCounts, 'Devis')}
-                                        ${table(['Date','Action','Client','Produit / type','Référence','Détail'], renderLogRows(estimates, 'Devis'), 'Aucune action sur les devis')}
+                                        ${table(['Date','Action','Client','Type de contrat','Détail'], renderLogRows(estimates), 'Aucune action sur les devis')}
                                     `
                                 )}
         
@@ -3095,7 +3111,7 @@
                                     `
                                         ${renderActionFilters('policies', policyCounts)}
                                         ${renderSubtypeButtons('policies', policyCounts, 'Contrats')}
-                                        ${table(['Date','Action','Client','Produit / type','Référence','Détail'], renderLogRows(policies, 'Contrat'), 'Aucune action sur les contrats')}
+                                        ${table(['Date','Action','Client','Type de contrat','Détail'], renderLogRows(policies), 'Aucune action sur les contrats')}
                                     `
                                 )}
         
@@ -3130,7 +3146,7 @@
                                     renderMetricButtons('claims', claimCounts, claims.length, 'Sinistres'),
                                     `
                                         ${renderSubtypeButtons('claims', claimCounts, 'Sinistres')}
-                                        ${table(['Date','Action','Client','Produit / type','Référence','Détail'], renderLogRows(claims, 'Sinistre'), 'Aucune action sur les sinistres')}
+                                        ${table(['Date','Action','Client','Type','Détail'], renderLogRows(claims), 'Aucune action sur les sinistres')}
                                     `
                                 )}
         
