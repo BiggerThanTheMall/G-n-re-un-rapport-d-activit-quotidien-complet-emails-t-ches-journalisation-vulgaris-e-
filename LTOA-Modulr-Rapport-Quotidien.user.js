@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         LTOA Modulr - Rapport Quotidien
 // @namespace    https://github.com/BiggerThanTheMall/tampermonkey-ltoa
-// @version      5.5.0
+// @version      5.6.0
 // @description  Génération automatique du rapport d’activité quotidien dans Modulr
 // @author       LTOA Assurances
 // @match        https://courtage.modulr.fr/*
@@ -541,30 +541,45 @@
                 .replace(/\\r\\n/g, '\n')
                 .replace(/\\n/g, '\n')
                 .replace(/\\r/g, '\n')
+                .replace(/\\t/g, ' ')
                 .replace(/\\\//g, '/');
 
-            // Décoder les entités AVANT de retirer les balises, car certaines
-            // notes de tâches arrivent sous la forme &lt;/p&gt;.
+            // Certaines notes Modulr sont encodées plusieurs fois :
+            // &amp;#x20; -> &#x20; -> espace. On décode jusqu'à stabilisation.
             const decoder = document.createElement('textarea');
-            decoder.innerHTML = value;
-            value = decoder.value;
-            decoder.innerHTML = value;
-            value = decoder.value;
+            for (let i = 0; i < 5; i++) {
+                const before = value;
+                decoder.innerHTML = value;
+                value = decoder.value;
+                value = value
+                    .replace(/&#x([0-9a-f]+);/gi, (_, hex) => String.fromCodePoint(parseInt(hex, 16)))
+                    .replace(/&#(\d+);/g, (_, dec) => String.fromCodePoint(parseInt(dec, 10)));
+                if (value === before) break;
+            }
 
             value = value
                 .replace(/<br\s*\/?>/gi, '\n')
                 .replace(/<\/p>/gi, '\n')
                 .replace(/<\/div>/gi, '\n')
                 .replace(/<\/li>/gi, '\n')
+                .replace(/<li[^>]*>/gi, '• ')
                 .replace(/<[^>]+>/g, '')
                 .replace(/&nbsp;/gi, ' ');
 
-            decoder.innerHTML = value;
-            value = decoder.value;
+            // Dernier passage après suppression des balises.
+            for (let i = 0; i < 3; i++) {
+                const before = value;
+                decoder.innerHTML = value;
+                value = decoder.value;
+                if (value === before) break;
+            }
 
             return value
+                .replace(/\\t/g, ' ')
                 .replace(/\r\n/g, '\n')
                 .replace(/\r/g, '\n')
+                .replace(/[\u00a0\u2000-\u200b\u202f\u205f\u3000\ufeff]/g, ' ')
+                .replace(/[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]/g, '')
                 .replace(/[ \t]+/g, ' ')
                 .replace(/ *\n */g, '\n')
                 .replace(/\n{3,}/g, '\n\n')
@@ -2806,6 +2821,19 @@
                         </div>
                     </div>`;
             };
+
+
+            function renderActionFilters(scope, counts) {
+                const total = (counts.creation || 0) + (counts.update || 0) + (counts.deletion || 0);
+                return `
+                    <div class="ltoa-inline-filters" data-filter-group="${scope}">
+                        <span class="ltoa-inline-filter-label">Filtrer par action</span>
+                        <button type="button" class="ltoa-inline-filter active" data-filter-kind="">Tous <b>${total}</b></button>
+                        ${counts.creation ? `<button type="button" class="ltoa-inline-filter" data-filter-kind="creation">Créations <b>${counts.creation}</b></button>` : ''}
+                        ${counts.update ? `<button type="button" class="ltoa-inline-filter" data-filter-kind="update">Modifications <b>${counts.update}</b></button>` : ''}
+                        ${counts.deletion ? `<button type="button" class="ltoa-inline-filter" data-filter-kind="deletion">Suppressions <b>${counts.deletion}</b></button>` : ''}
+                    </div>`;
+            }
         
             const renderTaskCards = items => (items || []).map(task => {
                 const text = Utils.cleanRichText(task.content || '');
@@ -2821,7 +2849,7 @@
             }).join('');
         
             const section = (id, title, count, summary, body) => `
-                <details class="ltoa-section" id="ltoa-section-${id}">
+                <details class="ltoa-section ltoa-section-${id}" id="ltoa-section-${id}">
                     <summary>
                         <div class="ltoa-section-name"><strong>${title}</strong><span class="ltoa-badge">${count}</span></div>
                         <div class="ltoa-section-summary">${summary}</div>
@@ -2857,14 +2885,67 @@
                     </tr>`)
             ].join('');
         
-            const callRows = aircallCalls.map(call => `
-                <tr data-kind="${call.type === 'entrant' ? 'inbound' : 'outbound'}">
-                    <td class="ltoa-time">${Utils.escapeHtml(call.time || '')}</td>
-                    <td>${call.type === 'entrant' ? 'Entrant' : 'Sortant'}</td>
-                    <td class="ltoa-client">${Utils.escapeHtml(call.contact || call.phone || '—')}</td>
-                    <td>${Utils.escapeHtml(call.duration || '')}</td>
-                    <td>${Utils.escapeHtml(call.summary || '—')}</td>
-                </tr>`).join('');
+            function renderCallCards() {
+                if (!aircallCalls.length) return '<div class="ltoa-empty">Aucun appel</div>';
+
+                const moodMeta = call => {
+                    if (call.answered === false || call.missedReason) return { icon: '📵', label: 'Manqué', cls: 'missed' };
+                    const mood = String(call.mood || '').toLowerCase();
+                    if (mood.includes('posit')) return { icon: '😊', label: 'Positif', cls: 'positive' };
+                    if (mood.includes('nég') || mood.includes('neg')) return { icon: '😟', label: 'Négatif', cls: 'negative' };
+                    if (mood.includes('neut')) return { icon: '😐', label: 'Neutre', cls: 'neutral' };
+                    return { icon: '📞', label: 'Répondu', cls: 'answered' };
+                };
+
+                return `
+                    <div class="ltoa-call-list">
+                        ${aircallCalls.map(call => {
+                            const mood = moodMeta(call);
+                            const topics = (call.topics || []).map(topic =>
+                                typeof topic === 'string' ? topic : (topic?.name || topic?.content || '')
+                            ).filter(Boolean);
+                            const actions = (call.actionItems || []).filter(Boolean);
+                            const kind = call.type === 'entrant' ? 'inbound' : 'outbound';
+
+                            return `
+                                <article class="ltoa-call-card ltoa-call-${kind}" data-kind="${kind}">
+                                    <div class="ltoa-call-top">
+                                        <div>
+                                            <div class="ltoa-call-title">
+                                                <span class="ltoa-call-direction">${call.type === 'entrant' ? '↙ Entrant' : '↗ Sortant'}</span>
+                                                <strong>${Utils.escapeHtml(call.contact || call.phone || 'Contact inconnu')}</strong>
+                                            </div>
+                                            <div class="ltoa-call-meta">${Utils.escapeHtml(call.time || '')} · ${Utils.escapeHtml(call.duration || '0s')}${call.phone ? ` · ${Utils.escapeHtml(call.phone)}` : ''}</div>
+                                        </div>
+                                        <div class="ltoa-call-quality ${mood.cls}">
+                                            <span>${mood.icon}</span>
+                                            <div><small>Qualité / ressenti</small><strong>${Utils.escapeHtml(mood.label)}</strong></div>
+                                        </div>
+                                    </div>
+
+                                    ${call.summary ? `<div class="ltoa-call-summary"><b>Résumé</b><div>${Utils.escapeHtml(call.summary)}</div></div>` : ''}
+
+                                    ${topics.length ? `
+                                        <div class="ltoa-call-detail-block">
+                                            <b>Sujets clés</b>
+                                            <div class="ltoa-call-pills">${topics.map(topic => `<span>${Utils.escapeHtml(topic)}</span>`).join('')}</div>
+                                        </div>` : ''}
+
+                                    ${actions.length ? `
+                                        <div class="ltoa-call-detail-block">
+                                            <b>Actions à suivre</b>
+                                            <div class="ltoa-call-actions">${actions.map(action => `<div>• ${Utils.escapeHtml(action)}</div>`).join('')}</div>
+                                        </div>` : ''}
+
+                                    ${call.transcript ? `
+                                        <details class="ltoa-call-transcript">
+                                            <summary>Voir la transcription${call.transcriptLanguage ? ` · ${Utils.escapeHtml(call.transcriptLanguage)}` : ''}</summary>
+                                            <div>${Utils.escapeHtml(call.transcript)}</div>
+                                        </details>` : ''}
+                                </article>`;
+                        }).join('')}
+                    </div>`;
+            }
         
             const otherRows = logs.map(log => `
                 <tr>
@@ -2874,8 +2955,22 @@
                     <td>${Utils.escapeHtml(ActivityDictionary.summarize(log))}</td>
                 </tr>`).join('');
         
+            const estimateStatusClass = label => {
+                const value = String(label || '').normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase();
+                if (value.includes('transform')) return 'is-transformed';
+                if (value.includes('perdu') || value.includes('refus')) return 'is-lost';
+                if (value.includes('tarification')) return 'is-pricing';
+                if (value.includes('souscription')) return 'is-subscription';
+                if (value.includes('attente') && value.includes('piece')) return 'is-waiting-docs';
+                if (value.includes('attente') && value.includes('appro')) return 'is-waiting-approval';
+                if (value.includes('remis') || value.includes('transmis')) return 'is-delivered';
+                if (value.includes('diff')) return 'is-deferred';
+                if (value.includes('cours')) return 'is-current';
+                return 'is-default';
+            };
+
             const assignedStatuses = (assignedEstimates.statuses || []).map(item => `
-                <span class="ltoa-work-status"><b>${item.count}</b><small>${Utils.escapeHtml(item.label)}</small></span>
+                <span class="ltoa-work-status ltoa-estimate-status ${estimateStatusClass(item.label)}"><b>${item.count}</b><small>${Utils.escapeHtml(item.label)}</small></span>
             `).join('');
         
             const emailSummary = `
@@ -2893,7 +2988,7 @@
                     <style>
                         #ltoa-report-modal{position:fixed;inset:0;z-index:2147483647;background:radial-gradient(circle at top left,rgba(37,99,235,.07),transparent 27%),#f5f7fb;color:#101828;font-family:Inter,-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Arial,sans-serif;overflow:auto}
                         #ltoa-report-modal *{box-sizing:border-box}
-                        .ltoa-shell{min-height:100vh;display:grid;grid-template-columns:230px minmax(0,1fr)}
+                        .ltoa-shell{min-height:100vh;display:grid;grid-template-columns:minmax(0,1fr)}
                         .ltoa-sidebar{position:sticky;top:0;height:100vh;padding:22px 16px;border-right:1px solid #e7ebf0;background:rgba(255,255,255,.72);backdrop-filter:blur(16px)}
                         .ltoa-brand{display:flex;align-items:center;gap:11px;padding:8px 10px 20px}.ltoa-logo{width:36px;height:36px;border-radius:11px;background:linear-gradient(135deg,#2563eb,#78a8ff);color:#fff;display:grid;place-items:center;font-weight:800;box-shadow:0 10px 22px rgba(37,99,235,.22)}.ltoa-brand strong{font-size:20px}.ltoa-brand small{display:block;color:#7b8795;margin-top:2px}
                         .ltoa-nav{background:rgba(255,255,255,.9);border:1px solid #edf0f4;border-radius:18px;padding:9px;box-shadow:0 12px 30px rgba(15,23,42,.04)}.ltoa-nav-label{font-size:10px;text-transform:uppercase;letter-spacing:.08em;color:#98a2b3;padding:8px 10px}.ltoa-nav-btn{width:100%;border:0;background:transparent;border-radius:12px;padding:10px 11px;text-align:left;cursor:pointer;color:#344054;font-size:12px;margin:2px 0}.ltoa-nav-btn:hover{background:#f5f7fb}.ltoa-nav-btn.active{background:#f7faff;box-shadow:inset 0 0 0 1px #dfe9ff;color:#1d4ed8}
@@ -2907,6 +3002,13 @@
                         .ltoa-work-grid{display:grid;grid-template-columns:1.45fr .8fr .8fr;gap:10px}.ltoa-work-card{border:1px solid #e7ebf0;background:rgba(255,255,255,.9);border-radius:18px;padding:15px;min-height:126px}.ltoa-work-card.main{border-color:#dbe7ff;background:linear-gradient(180deg,#f8fbff,#fff)}.ltoa-work-card-head{display:flex;justify-content:space-between;gap:12px;align-items:flex-start}.ltoa-work-card-head span{font-size:12px;font-weight:700;color:#344054}.ltoa-work-card-head strong{font-size:26px;line-height:1}.ltoa-work-card p{font-size:10px;color:#7a8695;margin:4px 0 12px}.ltoa-work-statuses{display:flex;flex-wrap:wrap;gap:7px}.ltoa-work-status{display:flex;flex-direction:column;min-width:86px;background:#f7f9fc;border:1px solid #edf0f3;border-radius:12px;padding:8px}.ltoa-work-status b{font-size:14px}.ltoa-work-status small{font-size:9px;color:#748091;margin-top:2px;line-height:1.2}
                         .ltoa-activity-head{margin:4px 0 12px}
                         .ltoa-section{background:rgba(255,255,255,.94);border:1px solid #e4e8ed;border-radius:17px;margin-bottom:10px;overflow:hidden;box-shadow:0 8px 24px rgba(15,23,42,.025)}
+                        .ltoa-section{--accent:#64748b;--accent-soft:#f1f5f9}.ltoa-section-estimates{--accent:#2563eb;--accent-soft:#eff6ff}.ltoa-section-policies{--accent:#7c3aed;--accent-soft:#f5f3ff}.ltoa-section-emails{--accent:#0891b2;--accent-soft:#ecfeff}.ltoa-section-tasks{--accent:#d97706;--accent-soft:#fffbeb}.ltoa-section-calls{--accent:#ea580c;--accent-soft:#fff7ed}.ltoa-section-claims{--accent:#dc2626;--accent-soft:#fef2f2}.ltoa-section-other{--accent:#475569;--accent-soft:#f8fafc}
+                        .ltoa-section>summary{border-left:4px solid var(--accent)}.ltoa-section-name strong{color:var(--accent)}.ltoa-section .ltoa-badge{background:var(--accent-soft);color:var(--accent)}.ltoa-section .ltoa-metric-btn{border-color:color-mix(in srgb,var(--accent) 22%,#e5e9ee);background:var(--accent-soft)}.ltoa-section .ltoa-metric-btn b{color:var(--accent)}
+                        .ltoa-estimate-status.is-current{background:#eff6ff;border-color:#bfdbfe}.ltoa-estimate-status.is-current b{color:#1d4ed8}.ltoa-estimate-status.is-pricing{background:#f5f3ff;border-color:#ddd6fe}.ltoa-estimate-status.is-pricing b{color:#7c3aed}.ltoa-estimate-status.is-delivered{background:#ecfeff;border-color:#a5f3fc}.ltoa-estimate-status.is-delivered b{color:#0e7490}.ltoa-estimate-status.is-waiting-docs{background:#fffbeb;border-color:#fde68a}.ltoa-estimate-status.is-waiting-docs b{color:#b45309}.ltoa-estimate-status.is-waiting-approval{background:#fff7ed;border-color:#fed7aa}.ltoa-estimate-status.is-waiting-approval b{color:#c2410c}.ltoa-estimate-status.is-deferred{background:#f8fafc;border-color:#cbd5e1}.ltoa-estimate-status.is-deferred b{color:#475569}.ltoa-estimate-status.is-lost{background:#fef2f2;border-color:#fecaca}.ltoa-estimate-status.is-lost b{color:#b91c1c}.ltoa-estimate-status.is-transformed{background:#f0fdf4;border-color:#bbf7d0}.ltoa-estimate-status.is-transformed b{color:#15803d}.ltoa-estimate-status.is-subscription{background:#eef2ff;border-color:#c7d2fe}.ltoa-estimate-status.is-subscription b{color:#4338ca}
+                        .ltoa-task-status.is-todo{background:#eff6ff;border-color:#bfdbfe}.ltoa-task-status.is-todo b{color:#1d4ed8}.ltoa-task-status.is-overdue{background:#fef2f2;border-color:#fecaca}.ltoa-task-status.is-overdue b{color:#b91c1c}.ltoa-task-status.is-done{background:#f0fdf4;border-color:#bbf7d0}.ltoa-task-status.is-done b{color:#15803d}
+                        .ltoa-inline-filters{display:flex;align-items:center;gap:7px;flex-wrap:wrap;margin-bottom:11px}.ltoa-inline-filter-label{font-size:9px;color:#98a2b3;text-transform:uppercase;letter-spacing:.07em;margin-right:2px}.ltoa-inline-filter{border:1px solid #e5e9ef;background:#fff;border-radius:999px;padding:6px 9px;font-size:10px;color:#596579;cursor:pointer}.ltoa-inline-filter b{margin-left:3px}.ltoa-inline-filter.active{background:var(--accent-soft);border-color:var(--accent);color:var(--accent)}
+                        .ltoa-call-list{display:grid;gap:9px}.ltoa-call-card{border:1px solid #e8ebef;border-left:4px solid #ea580c;background:#fff;border-radius:14px;padding:12px}.ltoa-call-card.ltoa-call-inbound{border-left-color:#16a34a}.ltoa-call-card.ltoa-call-outbound{border-left-color:#2563eb}.ltoa-call-top{display:flex;align-items:flex-start;justify-content:space-between;gap:14px}.ltoa-call-title{display:flex;align-items:center;gap:8px;flex-wrap:wrap}.ltoa-call-title strong{font-size:12px}.ltoa-call-direction{font-size:9px;font-weight:800;border-radius:999px;padding:4px 7px;background:#f1f5f9;color:#475569}.ltoa-call-inbound .ltoa-call-direction{background:#f0fdf4;color:#15803d}.ltoa-call-outbound .ltoa-call-direction{background:#eff6ff;color:#1d4ed8}.ltoa-call-meta{font-size:9px;color:#7a8695;margin-top:4px}.ltoa-call-quality{display:flex;align-items:center;gap:6px;border:1px solid #e5e9ef;border-radius:11px;padding:6px 8px;background:#f8fafc;min-width:128px}.ltoa-call-quality>span{font-size:18px}.ltoa-call-quality small{display:block;font-size:7px;text-transform:uppercase;color:#98a2b3;letter-spacing:.04em}.ltoa-call-quality strong{display:block;font-size:10px}.ltoa-call-quality.positive{background:#f0fdf4;border-color:#bbf7d0}.ltoa-call-quality.negative,.ltoa-call-quality.missed{background:#fef2f2;border-color:#fecaca}.ltoa-call-quality.neutral,.ltoa-call-quality.answered{background:#f8fafc}.ltoa-call-summary,.ltoa-call-detail-block{margin-top:9px;background:#f8fafc;border-radius:10px;padding:9px 10px;font-size:10px;line-height:1.45;color:#475569}.ltoa-call-summary b,.ltoa-call-detail-block>b{display:block;font-size:8px;text-transform:uppercase;letter-spacing:.05em;color:#7a8695;margin-bottom:4px}.ltoa-call-pills{display:flex;flex-wrap:wrap;gap:5px}.ltoa-call-pills span{background:#fff;border:1px solid #e5e9ef;border-radius:999px;padding:4px 7px;font-size:9px}.ltoa-call-actions div{margin-top:2px}.ltoa-call-transcript{margin-top:9px;border-top:1px solid #edf0f3;padding-top:8px}.ltoa-call-transcript summary{cursor:pointer;color:#c2410c;font-size:10px;font-weight:700}.ltoa-call-transcript div{white-space:pre-wrap;background:#fbfbfc;border-radius:9px;padding:9px;margin-top:7px;font-size:10px;line-height:1.48;color:#445160}
+
                         .ltoa-section>summary{list-style:none;cursor:pointer;display:grid;grid-template-columns:minmax(160px,1fr) auto 20px;align-items:center;gap:16px;padding:14px 16px;min-height:58px}.ltoa-section>summary::-webkit-details-marker{display:none}.ltoa-section-name{display:flex;align-items:center;gap:8px}.ltoa-section-name strong{font-size:14px}.ltoa-badge{background:#f0f3f6;border-radius:999px;padding:3px 8px;font-size:10px;color:#536170}.ltoa-section-summary{display:flex;justify-content:flex-end;gap:7px;flex-wrap:wrap}.ltoa-chevron{color:#98a2b3;transition:.18s}.ltoa-section[open] .ltoa-chevron{transform:rotate(180deg)}.ltoa-section[open]>summary{border-bottom:1px solid #edf0f3}.ltoa-section-body{padding:15px 16px 17px}
                         .ltoa-metric-btn{border:1px solid #e5e9ee;background:#fff;border-radius:999px;padding:6px 9px;font-size:10px;color:#5b6674;cursor:pointer}.ltoa-metric-btn:hover{border-color:#cddbf6;background:#f7faff;color:#2456a6}.ltoa-metric-btn b{color:#111827;margin-right:3px}
                         .ltoa-breakdown{background:#f8fafc;border:1px solid #edf0f3;border-radius:14px;padding:12px;margin-bottom:12px}.ltoa-breakdown-label{font-size:9px;color:#98a2b3;text-transform:uppercase;letter-spacing:.08em;margin-bottom:8px}.ltoa-breakdown-grid{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:8px}.ltoa-subtype-btn{border:1px solid #e7ebef;background:#fff;border-radius:12px;padding:10px;text-align:left;cursor:pointer}.ltoa-subtype-btn:hover{border-color:#cedcf7;box-shadow:0 7px 18px rgba(37,99,235,.06)}.ltoa-subtype-btn b{display:block;font-size:16px}.ltoa-subtype-btn span{display:block;font-size:10px;color:#475467;margin:2px 0 6px}.ltoa-subtype-btn small{font-size:9px;color:#2563eb}
@@ -2917,22 +3019,6 @@
                     </style>
         
                     <div class="ltoa-shell">
-                        <aside class="ltoa-sidebar">
-                            <div class="ltoa-brand">
-                                <div class="ltoa-logo">M</div>
-                                <div><strong>Modulr</strong><small>Rapport d’activité</small></div>
-                            </div>
-                            <nav class="ltoa-nav">
-                                <div class="ltoa-nav-label">Navigation</div>
-                                <button type="button" class="ltoa-nav-btn active" data-target="top">Vue générale</button>
-                                <button type="button" class="ltoa-nav-btn" data-target="estimates">Devis</button>
-                                <button type="button" class="ltoa-nav-btn" data-target="policies">Contrats</button>
-                                <button type="button" class="ltoa-nav-btn" data-target="tasks">Tâches</button>
-                                <button type="button" class="ltoa-nav-btn" data-target="emails">Emails</button>
-                                <button type="button" class="ltoa-nav-btn" data-target="claims">Sinistres</button>
-                            </nav>
-                        </aside>
-        
                         <div class="ltoa-content">
                             <header class="ltoa-topbar" id="ltoa-report-top">
                                 <div class="ltoa-title">
@@ -2975,8 +3061,9 @@
                                             <div class="ltoa-work-card-head"><span>Tâches à traiter</span><strong>${pendingTasks.length}</strong></div>
                                             <p>Tâches ouvertes affectées au collaborateur</p>
                                             <div class="ltoa-work-statuses">
-                                                <span class="ltoa-work-status"><b>${normalPendingTasks}</b><small>À faire</small></span>
-                                                <span class="ltoa-work-status"><b>${overduePendingTasks}</b><small>En retard</small></span>
+                                                <span class="ltoa-work-status ltoa-task-status is-todo"><b>${normalPendingTasks}</b><small>À faire</small></span>
+                                                <span class="ltoa-work-status ltoa-task-status is-overdue"><b>${overduePendingTasks}</b><small>En retard</small></span>
+                                                <span class="ltoa-work-status ltoa-task-status is-done"><b>${tasksCompleted.length}</b><small>Traitées aujourd’hui</small></span>
                                             </div>
                                         </div>
                                     </div>
@@ -2994,6 +3081,7 @@
                                     estimates.length,
                                     renderMetricButtons('estimates', estimateCounts, estimates.length, 'Devis'),
                                     `
+                                        ${renderActionFilters('estimates', estimateCounts)}
                                         ${renderSubtypeButtons('estimates', estimateCounts, 'Devis')}
                                         ${table(['Date','Action','Client','Produit / type','Référence','Détail'], renderLogRows(estimates, 'Devis'), 'Aucune action sur les devis')}
                                     `
@@ -3005,6 +3093,7 @@
                                     policies.length,
                                     renderMetricButtons('policies', policyCounts, policies.length, 'Contrats'),
                                     `
+                                        ${renderActionFilters('policies', policyCounts)}
                                         ${renderSubtypeButtons('policies', policyCounts, 'Contrats')}
                                         ${table(['Date','Action','Client','Produit / type','Référence','Détail'], renderLogRows(policies, 'Contrat'), 'Aucune action sur les contrats')}
                                     `
@@ -3031,7 +3120,7 @@
                                     'Appels',
                                     aircallCalls.length,
                                     callSummary,
-                                    table(['Heure','Sens','Contact','Durée','Résumé'], callRows, 'Aucun appel')
+                                    renderCallCards()
                                 )}
         
                                 ${section(
@@ -3095,22 +3184,32 @@
                 const subtype = button.dataset.subtype || '';
                 const sectionEl = document.getElementById(`ltoa-section-${sectionId}`);
                 const sourceTable = sectionEl?.querySelector('.ltoa-table');
-                if (!sourceTable) return;
-        
-                const clone = sourceTable.cloneNode(true);
-                const rows = Array.from(clone.querySelectorAll('tbody tr'));
-                rows.forEach(row => {
-                    const matchesKind = !kind || row.dataset.kind === kind;
-                    const matchesSubtype = !subtype || row.dataset.subtype === subtype;
-                    if (!matchesKind || !matchesSubtype) row.remove();
-                });
-        
+                const sourceCalls = sectionEl?.querySelector('.ltoa-call-list');
+                if (!sourceTable && !sourceCalls) return;
+
                 detailTitle.textContent = button.dataset.detailTitle || 'Détail';
                 detailContent.innerHTML = '';
-                const wrap = document.createElement('div');
-                wrap.className = 'ltoa-table-wrap';
-                wrap.appendChild(clone);
-                detailContent.appendChild(wrap);
+
+                if (sourceTable) {
+                    const clone = sourceTable.cloneNode(true);
+                    const rows = Array.from(clone.querySelectorAll('tbody tr'));
+                    rows.forEach(row => {
+                        const matchesKind = !kind || row.dataset.kind === kind;
+                        const matchesSubtype = !subtype || row.dataset.subtype === subtype;
+                        if (!matchesKind || !matchesSubtype) row.remove();
+                    });
+                    const wrap = document.createElement('div');
+                    wrap.className = 'ltoa-table-wrap';
+                    wrap.appendChild(clone);
+                    detailContent.appendChild(wrap);
+                } else if (sourceCalls) {
+                    const clone = sourceCalls.cloneNode(true);
+                    clone.querySelectorAll('.ltoa-call-card').forEach(card => {
+                        if (kind && card.dataset.kind !== kind) card.remove();
+                    });
+                    detailContent.appendChild(clone);
+                }
+
                 detailBackdrop.classList.add('show');
             };
         
@@ -3122,19 +3221,23 @@
                 });
             });
         
-            modal.querySelectorAll('.ltoa-nav-btn').forEach(button => {
-                button.addEventListener('click', () => {
-                    modal.querySelectorAll('.ltoa-nav-btn').forEach(item => item.classList.remove('active'));
-                    button.classList.add('active');
-                    const target = button.dataset.target;
-                    if (target === 'top') {
-                        document.getElementById('ltoa-report-top')?.scrollIntoView({behavior:'smooth', block:'start'});
-                        return;
-                    }
-                    const sectionEl = document.getElementById(`ltoa-section-${target}`);
-                    if (sectionEl) {
-                        sectionEl.scrollIntoView({behavior:'smooth', block:'start'});
-                    }
+            modal.querySelectorAll('.ltoa-inline-filters').forEach(group => {
+                const sectionEl = group.closest('.ltoa-section');
+                const rows = sectionEl ? Array.from(sectionEl.querySelectorAll('.ltoa-table tbody tr')) : [];
+
+                group.querySelectorAll('.ltoa-inline-filter').forEach(button => {
+                    button.addEventListener('click', event => {
+                        event.preventDefault();
+                        event.stopPropagation();
+
+                        const kind = button.dataset.filterKind || '';
+                        group.querySelectorAll('.ltoa-inline-filter').forEach(item => item.classList.remove('active'));
+                        button.classList.add('active');
+
+                        rows.forEach(row => {
+                            row.style.display = !kind || row.dataset.kind === kind ? '' : 'none';
+                        });
+                    });
                 });
             });
         
@@ -3502,7 +3605,7 @@
                     .ltoa-client-tools{display:flex;gap:8px;align-items:center;margin:0 0 14px}.ltoa-client-search{flex:1;border:1px solid #dfe4ea;background:#fff;border-radius:14px;padding:11px 13px;font:inherit;font-size:12px;outline:none}.ltoa-client-search:focus{border-color:#a9c0f7;box-shadow:0 0 0 4px rgba(37,99,235,.07)}
                     .ltoa-client-card{background:#fff;border:1px solid #e4e8ed;border-radius:18px;margin-bottom:10px;overflow:hidden;box-shadow:0 8px 24px rgba(15,23,42,.025)}.ltoa-client-card>summary{list-style:none;cursor:pointer;padding:15px 16px;display:grid;grid-template-columns:minmax(0,1fr) auto;gap:14px;align-items:center}.ltoa-client-card>summary::-webkit-details-marker{display:none}.ltoa-client-card[open]>summary{border-bottom:1px solid #edf0f3;background:#fbfcfe}
                     .ltoa-client-ident strong{display:block;font-size:14px}.ltoa-client-ident span{display:block;color:#7a8695;font-size:10px;margin-top:3px}.ltoa-client-counts{display:flex;gap:6px;align-items:center;justify-content:flex-end;flex-wrap:wrap}.ltoa-client-counts span{font-size:9px;border:1px solid #e6eaf0;background:#f8fafc;border-radius:999px;padding:5px 8px;color:#596579}.ltoa-client-counts b{min-width:31px;text-align:center;border-radius:999px;background:#eef3ff;color:#315ea8;padding:6px 8px;font-size:11px}
-                    .ltoa-client-body{padding:14px 16px 17px}.ltoa-client-link{display:inline-block;margin-bottom:12px;color:#2259da;text-decoration:none;font-size:11px;font-weight:700}.ltoa-client-group{border-top:1px solid #edf0f3;padding:13px 0}.ltoa-client-group:first-of-type{border-top:0}.ltoa-client-group-head{display:flex;justify-content:space-between;align-items:center;margin-bottom:7px}.ltoa-client-group-head strong{font-size:11px;text-transform:uppercase;letter-spacing:.05em;color:#657184}.ltoa-client-group-head span{font-size:10px;background:#f1f4f7;border-radius:999px;padding:3px 7px;color:#667085}
+                    .ltoa-client-body{padding:14px 16px 17px}.ltoa-client-link{display:inline-block;margin-bottom:12px;color:#2259da;text-decoration:none;font-size:11px;font-weight:700}.ltoa-client-group{border-top:1px solid #edf0f3;padding:13px 0}.ltoa-client-group:first-of-type{border-top:0}.ltoa-client-group-head{display:flex;justify-content:space-between;align-items:center;margin-bottom:7px}.ltoa-client-group-head strong{font-size:11px;text-transform:uppercase;letter-spacing:.05em;color:#315ea8}.ltoa-client-group:nth-of-type(2) .ltoa-client-group-head strong{color:#0891b2}.ltoa-client-group:nth-of-type(3) .ltoa-client-group-head strong{color:#ea580c}.ltoa-client-group:nth-of-type(4) .ltoa-client-group-head strong{color:#d97706}.ltoa-client-group:nth-of-type(5) .ltoa-client-group-head strong{color:#dc2626}.ltoa-client-group:nth-of-type(6) .ltoa-client-group-head strong{color:#7c3aed}.ltoa-client-group-head span{font-size:10px;background:#f1f4f7;border-radius:999px;padding:3px 7px;color:#667085}
                     .ltoa-client-group-body{display:grid;gap:7px}.ltoa-sub-row{border:1px solid #edf0f3;background:#fcfdff;border-radius:13px;padding:10px 11px}.ltoa-sub-row strong{font-size:11px}.ltoa-sub-row small{display:block;margin-top:3px;font-size:9px;color:#84909f}.ltoa-sub-row-detail{font-size:10px;color:#526071;margin-top:6px}.ltoa-sub-text{white-space:pre-wrap;background:#f5f7fa;border-radius:9px;padding:8px 9px;margin-top:7px;font-size:10px;line-height:1.45;color:#445160}.ltoa-more{margin-top:7px}.ltoa-more summary{cursor:pointer;color:#315ea8;font-size:10px;font-weight:700}.ltoa-mini-pills{display:flex;gap:5px;flex-wrap:wrap;margin-top:7px}.ltoa-mini-pills span{font-size:9px;border:1px solid #e6eaf0;border-radius:999px;padding:4px 7px;background:#fff;color:#667085}
                     .ltoa-empty-secondary{background:#fff;border:1px solid #e4e8ed;border-radius:18px;padding:42px;text-align:center;color:#7a8695;font-size:12px}
                     @media(max-width:760px){.ltoa-secondary-top{align-items:flex-start}.ltoa-secondary-actions{flex-wrap:wrap;justify-content:flex-end}.ltoa-secondary-main{padding:14px}.ltoa-secondary-summary{grid-template-columns:1fr}.ltoa-client-tools{flex-wrap:wrap}.ltoa-client-search{flex-basis:100%}.ltoa-client-card>summary{grid-template-columns:1fr}.ltoa-client-counts{justify-content:flex-start}}
@@ -3775,7 +3878,7 @@
                     .ltoa-chrono-main{max-width:1050px;margin:0 auto;padding:22px 24px 44px}.ltoa-chrono-summary{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:10px;margin-bottom:13px}.ltoa-chrono-stat{background:#fff;border:1px solid #e4e8ed;border-radius:17px;padding:14px 16px}.ltoa-chrono-stat strong{display:block;font-size:22px}.ltoa-chrono-stat span{font-size:10px;color:#7a8695}
                     .ltoa-chrono-tools{display:flex;gap:7px;align-items:center;flex-wrap:wrap;background:#fff;border:1px solid #e4e8ed;border-radius:17px;padding:10px;margin-bottom:16px}.ltoa-chrono-search{flex:1;min-width:220px;border:0;background:#f6f8fb;border-radius:11px;padding:10px 11px;font:inherit;font-size:11px;outline:none}.ltoa-chrono-filter{border:1px solid #e4e8ed;background:#fff;border-radius:999px;padding:7px 9px;font-size:10px;color:#526071;cursor:pointer}.ltoa-chrono-filter b{margin-left:5px}.ltoa-chrono-filter.active{background:#eef3ff;border-color:#d5e0ff;color:#315ea8}
                     .ltoa-timeline{position:relative}.ltoa-time-row{display:grid;grid-template-columns:72px 20px minmax(0,1fr);gap:8px;align-items:stretch;margin-bottom:8px}.ltoa-time-col{text-align:right;padding-top:11px}.ltoa-time-col strong{display:block;font-size:11px}.ltoa-time-col span{display:block;font-size:8px;color:#98a2b3;margin-top:3px}.ltoa-time-line{position:relative}.ltoa-time-line:before{content:"";position:absolute;left:9px;top:0;bottom:-9px;width:1px;background:#dfe5ec}.ltoa-time-line i{position:absolute;left:5px;top:14px;width:9px;height:9px;border-radius:50%;background:#5d7fd8;box-shadow:0 0 0 4px #edf3ff}
-                    .ltoa-time-card{background:#fff;border:1px solid #e4e8ed;border-radius:15px;padding:11px 12px;box-shadow:0 7px 22px rgba(15,23,42,.025)}.ltoa-time-card-head{display:flex;justify-content:space-between;gap:9px;align-items:center;margin-bottom:5px}.ltoa-time-tag{font-size:9px;background:#f1f4f8;border-radius:999px;padding:4px 7px;color:#596579;font-weight:700}.ltoa-time-client{font-size:9px;color:#667085}.ltoa-time-title{display:block;font-size:12px}.ltoa-time-detail{font-size:10px;color:#667085;margin-top:4px}.ltoa-time-more{margin-top:8px;border-top:1px solid #edf0f3;padding-top:7px}.ltoa-time-more summary{cursor:pointer;color:#315ea8;font-size:9px;font-weight:700}.ltoa-time-more div{white-space:pre-wrap;font-size:10px;color:#4d5968;line-height:1.5;margin-top:7px;background:#f7f9fb;border-radius:9px;padding:8px}
+                    .ltoa-time-card{background:#fff;border:1px solid #e4e8ed;border-radius:15px;padding:11px 12px;box-shadow:0 7px 22px rgba(15,23,42,.025)}.ltoa-time-card-head{display:flex;justify-content:space-between;gap:9px;align-items:center;margin-bottom:5px}.ltoa-time-tag{font-size:9px;background:#f1f4f8;border-radius:999px;padding:4px 7px;color:#596579;font-weight:700}.ltoa-time-row[data-category="emails"] .ltoa-time-tag{background:#ecfeff;color:#0e7490}.ltoa-time-row[data-category="calls"] .ltoa-time-tag{background:#fff7ed;color:#c2410c}.ltoa-time-row[data-category="tasks"] .ltoa-time-tag{background:#fffbeb;color:#b45309}.ltoa-time-row[data-category="estimates"] .ltoa-time-tag{background:#eff6ff;color:#1d4ed8}.ltoa-time-row[data-category="policies"] .ltoa-time-tag{background:#f5f3ff;color:#7c3aed}.ltoa-time-row[data-category="claims"] .ltoa-time-tag{background:#fef2f2;color:#b91c1c}.ltoa-time-client{font-size:9px;color:#667085}.ltoa-time-title{display:block;font-size:12px}.ltoa-time-detail{font-size:10px;color:#667085;margin-top:4px}.ltoa-time-more{margin-top:8px;border-top:1px solid #edf0f3;padding-top:7px}.ltoa-time-more summary{cursor:pointer;color:#315ea8;font-size:9px;font-weight:700}.ltoa-time-more div{white-space:pre-wrap;font-size:10px;color:#4d5968;line-height:1.5;margin-top:7px;background:#f7f9fb;border-radius:9px;padding:8px}
                     .ltoa-chrono-empty{background:#fff;border:1px solid #e4e8ed;border-radius:18px;padding:42px;text-align:center;color:#7a8695;font-size:12px}
                     @media(max-width:760px){.ltoa-chrono-main{padding:14px}.ltoa-chrono-summary{grid-template-columns:1fr 1fr}.ltoa-time-row{grid-template-columns:48px 16px minmax(0,1fr)}.ltoa-time-col strong{font-size:10px}.ltoa-time-line:before{left:7px}.ltoa-time-line i{left:3px}.ltoa-time-card-head{align-items:flex-start;flex-direction:column}.ltoa-chrono-top{align-items:flex-start}}
                 </style>
