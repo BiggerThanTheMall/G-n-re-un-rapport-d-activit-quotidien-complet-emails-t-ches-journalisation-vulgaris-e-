@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         LTOA Modulr - Rapport Quotidien
 // @namespace    https://github.com/BiggerThanTheMall/tampermonkey-ltoa
-// @version      5.3.0
+// @version      5.3.1
 // @description  Génération automatique du rapport d’activité quotidien dans Modulr
 // @author       LTOA Assurances
 // @match        https://courtage.modulr.fr/*
@@ -5447,7 +5447,7 @@
             let aircallCalls = [];
             if (CONFIG.AIRCALL_ENABLED) {
                 try {
-                    aircallCalls = await AircallCollector.collect(connectedUser, loader.updateStatus);
+                    aircallCalls = await AircallCollector.collect(connectedUser, Utils.getTodayDate(), loader.updateStatus);
                     Utils.log(`${aircallCalls.length} appels Aircall collectés`);
                 } catch (e) {
                     Utils.log('Erreur collecte Aircall (non bloquante):', e);
