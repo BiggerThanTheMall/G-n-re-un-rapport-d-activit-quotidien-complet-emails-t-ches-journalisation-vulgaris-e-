@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         LTOA Modulr - Rapport Quotidien
 // @namespace    https://github.com/BiggerThanTheMall/tampermonkey-ltoa
-// @version      5.4.0
+// @version      5.4.1
 // @description  Génération automatique du rapport d’activité quotidien dans Modulr
 // @author       LTOA Assurances
 // @match        https://courtage.modulr.fr/*
@@ -1228,7 +1228,7 @@
     // ============================================
     // COLLECTEUR D'APPELS AIRCALL
     // ============================================
-    // Accès Aircall sécurisé via Netlify : aucun secret dans Tampermonkey.
+    // Accès Aircall sécurisé via un relais serveur : aucun secret dans Tampermonkey.
     const AircallCollector = {
         lastStatus: { state: 'not_started', source: null, message: '' },
         API_ROOT: 'https://aircallmodulr.netlify.app',
@@ -1300,7 +1300,7 @@
             const range = this.dateRange(reportDate);
             const calls = [], seen = new Set();
             for (let page = 1; page <= 250; page++) {
-                updateLoader(`API Aircall via Netlify : page ${page}...`);
+                updateLoader(`Aircall : page ${page}...`);
                 const q = new URLSearchParams({
                     user_id: String(userId), from: String(range.from), to: String(range.to),
                     order: 'asc', per_page: '50', fetch_contact: 'true', page: String(page)
@@ -1363,9 +1363,9 @@
                 return [];
             }
             try {
-                updateLoader('Connexion Aircall sécurisée via Netlify...');
+                updateLoader('Connexion à Aircall...');
                 const calls = await this.collectDirect(connectedUser, reportDate, updateLoader);
-                this.lastStatus = { state: 'complete', source: 'api', message: `API Aircall via Netlify : ${calls.length} appel${calls.length > 1 ? 's' : ''} trouvé${calls.length > 1 ? 's' : ''}` };
+                this.lastStatus = { state: 'complete', source: 'api', message: `Aircall : ${calls.length} appel${calls.length > 1 ? 's' : ''} trouvé${calls.length > 1 ? 's' : ''}` };
                 return calls;
             } catch (error) {
                 this.lastStatus = { state: 'error', source: 'api', message: `Erreur API Aircall : ${error.message}` };
@@ -2722,7 +2722,7 @@
                 aircallCalls = [], tasksCompleted = [], tasksOverdue = [], pendingTasks = [],
                 logs = [], estimates = [], policies = [], claims = [],
                 assignedEstimates = { total: 0, statuses: [] },
-                user, date, aircallStatus
+                user, date, notes, aircallStatus
             } = this.data;
         
             const realToday = Utils.getRealTodayDate();
@@ -2890,6 +2890,7 @@
                         .ltoa-title h1{font-size:27px;margin:0 0 3px;font-weight:760;letter-spacing:-.03em}.ltoa-title span{font-size:12px;color:#7a8695}.ltoa-actions{display:flex;align-items:center;gap:8px}.ltoa-user-pill{border:1px solid #e5e9ef;background:#fff;border-radius:999px;padding:9px 12px;font-size:12px;font-weight:700;color:#344054}.ltoa-btn{border:1px solid #e1e6ec;background:#fff;border-radius:999px;padding:9px 12px;font-size:12px;cursor:pointer;color:#344150}.ltoa-btn:hover{background:#f7f9fb}.ltoa-close{font-size:18px;line-height:1;padding:7px 10px}
                         .ltoa-main{max-width:1500px;margin:0 auto;padding:22px 24px 42px}
                         .ltoa-warning{background:#fff1f1;border:1px solid #f0c7c7;color:#9b2c2c;border-radius:12px;padding:11px 14px;margin-bottom:14px;font-size:12px}
+                .ltoa-report-note{background:linear-gradient(180deg,rgba(255,255,255,.98),rgba(255,255,255,.9));border:1px solid #e4e8ed;border-radius:16px;padding:14px 16px;margin-bottom:14px;box-shadow:0 8px 24px rgba(15,23,42,.025)}.ltoa-report-note strong{display:block;font-size:10px;text-transform:uppercase;letter-spacing:.08em;color:#98a2b3;margin-bottom:6px}.ltoa-report-note div{font-size:13px;line-height:1.55;color:#344054;white-space:pre-wrap}
                         .ltoa-workload{width:100%;background:linear-gradient(180deg,rgba(255,255,255,.96),rgba(255,255,255,.82));border:1px solid rgba(228,231,235,.92);border-radius:24px;padding:20px;box-shadow:0 18px 50px rgba(15,23,42,.06);margin-bottom:24px}
                         .ltoa-work-head{display:flex;justify-content:space-between;align-items:flex-end;gap:20px;margin-bottom:16px}.ltoa-kicker{font-size:10px;color:#98a2b3;text-transform:uppercase;letter-spacing:.09em;margin-bottom:5px}.ltoa-work-head h2,.ltoa-activity-head h2{font-size:21px;margin:0;letter-spacing:-.02em}.ltoa-work-head p,.ltoa-activity-head p{font-size:12px;color:#748091;margin:4px 0 0}.ltoa-work-total{text-align:right}.ltoa-work-total strong{font-size:31px;line-height:1}.ltoa-work-total span{display:block;font-size:10px;color:#7a8695;margin-top:4px}
                         .ltoa-work-grid{display:grid;grid-template-columns:1.45fr .8fr .8fr;gap:10px}.ltoa-work-card{border:1px solid #e7ebf0;background:rgba(255,255,255,.9);border-radius:18px;padding:15px;min-height:126px}.ltoa-work-card.main{border-color:#dbe7ff;background:linear-gradient(180deg,#f8fbff,#fff)}.ltoa-work-card-head{display:flex;justify-content:space-between;gap:12px;align-items:flex-start}.ltoa-work-card-head span{font-size:12px;font-weight:700;color:#344054}.ltoa-work-card-head strong{font-size:26px;line-height:1}.ltoa-work-card p{font-size:10px;color:#7a8695;margin:4px 0 12px}.ltoa-work-statuses{display:flex;flex-wrap:wrap;gap:7px}.ltoa-work-status{display:flex;flex-direction:column;min-width:86px;background:#f7f9fc;border:1px solid #edf0f3;border-radius:12px;padding:8px}.ltoa-work-status b{font-size:14px}.ltoa-work-status small{font-size:9px;color:#748091;margin-top:2px;line-height:1.2}
@@ -2938,6 +2939,7 @@
         
                             <main class="ltoa-main">
                                 ${aircallStatus?.state === 'error' ? `<div class="ltoa-warning">${Utils.escapeHtml(aircallStatus.message || 'Erreur Aircall')}</div>` : ''}
+                                ${notes ? `<div class="ltoa-report-note"><strong>Note</strong><div>${Utils.escapeHtml(notes)}</div></div>` : ''}
         
                                 <section class="ltoa-workload">
                                     <div class="ltoa-work-head">
@@ -5427,11 +5429,9 @@
     // Afficher le sélecteur de date
     function showDatePicker() {
         return new Promise((resolve) => {
-            // Supprimer un éventuel picker existant
             const existing = document.getElementById('ltoa-date-picker-modal');
             if (existing) existing.remove();
 
-            // Calculer les dates pour les boutons rapides
             const today = new Date();
             const formatDate = (d) => {
                 const day = String(d.getDate()).padStart(2, '0');
@@ -5448,131 +5448,89 @@
 
             const yesterday = new Date(today);
             yesterday.setDate(yesterday.getDate() - 1);
-
             const twoDaysAgo = new Date(today);
             twoDaysAgo.setDate(twoDaysAgo.getDate() - 2);
 
             const modal = document.createElement('div');
             modal.id = 'ltoa-date-picker-modal';
             modal.innerHTML = `
-                <div style="
-                    position: fixed;
-                    top: 0; left: 0; right: 0; bottom: 0;
-                    background: rgba(0,0,0,0.5);
-                    z-index: 2147483646;
-                    display: flex;
-                    align-items: center;
-                    justify-content: center;
-                ">
-                    <div style="
-                        background: white;
-                        border-radius: 12px;
-                        padding: 25px;
-                        min-width: 350px;
-                        box-shadow: 0 10px 40px rgba(0,0,0,0.3);
-                        font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
-                    ">
-                        <h3 style="margin: 0 0 20px 0; color: #333; font-size: 18px; display: flex; align-items: center; gap: 10px;">
-                            📅 Choisir la date du rapport
-                        </h3>
-
-                        <div style="margin-bottom: 20px;">
-                            <label style="display: block; margin-bottom: 8px; color: #666; font-size: 13px;">
-                                Sélectionner une date :
-                            </label>
-                            <input type="date" id="ltoa-date-input" value="${formatDateInput(today)}" max="${formatDateInput(today)}" style="
-                                width: 100%;
-                                padding: 12px;
-                                border: 2px solid #e0e0e0;
-                                border-radius: 8px;
-                                font-size: 15px;
-                                box-sizing: border-box;
-                                transition: border-color 0.2s;
-                            ">
+                <style>
+                    #ltoa-date-picker-modal *{box-sizing:border-box}
+                    .ltoa-picker-backdrop{
+                        position:fixed;inset:0;z-index:2147483646;
+                        display:flex;align-items:center;justify-content:center;padding:24px;
+                        background:rgba(15,23,42,.28);backdrop-filter:blur(8px);
+                        font-family:Inter,-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Arial,sans-serif;
+                    }
+                    .ltoa-picker-card{
+                        width:min(620px,96vw);
+                        background:linear-gradient(180deg,rgba(255,255,255,.98),rgba(250,252,255,.96));
+                        border:1px solid rgba(255,255,255,.86);
+                        border-radius:26px;padding:24px;
+                        box-shadow:0 30px 90px rgba(15,23,42,.20);
+                        color:#101828;
+                    }
+                    .ltoa-picker-head{display:flex;align-items:flex-start;justify-content:space-between;gap:16px;margin-bottom:22px}
+                    .ltoa-picker-kicker{font-size:10px;text-transform:uppercase;letter-spacing:.09em;color:#98a2b3;margin-bottom:5px}
+                    .ltoa-picker-head h3{margin:0;font-size:24px;letter-spacing:-.03em;font-weight:760}
+                    .ltoa-picker-head p{margin:5px 0 0;font-size:12px;color:#748091}
+                    .ltoa-picker-close{border:0;background:#f1f4f7;width:36px;height:36px;border-radius:999px;cursor:pointer;color:#667085;font-size:18px}
+                    .ltoa-picker-label{display:block;font-size:11px;font-weight:700;color:#475467;margin:0 0 8px}
+                    .ltoa-picker-input,.ltoa-picker-note{
+                        width:100%;border:1px solid #dfe4ea;background:#fff;border-radius:14px;
+                        padding:12px 13px;font:inherit;color:#101828;outline:none;
+                        transition:border-color .16s,box-shadow .16s;
+                    }
+                    .ltoa-picker-input:focus,.ltoa-picker-note:focus{
+                        border-color:#9ab8ff;box-shadow:0 0 0 4px rgba(37,99,235,.08)
+                    }
+                    .ltoa-picker-note{min-height:108px;resize:vertical;line-height:1.5}
+                    .ltoa-picker-field{margin-bottom:18px}
+                    .ltoa-quick-dates{display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin-top:9px}
+                    .ltoa-quick-date{
+                        border:1px solid #e3e8ef;background:#fff;border-radius:13px;padding:10px 12px;
+                        cursor:pointer;color:#475467;text-align:left;font:inherit;transition:.16s ease
+                    }
+                    .ltoa-quick-date:hover{transform:translateY(-1px);border-color:#cbd8f5;box-shadow:0 8px 20px rgba(37,99,235,.06)}
+                    .ltoa-quick-date.active{background:#f3f7ff;border-color:#cddcff;color:#1d4ed8}
+                    .ltoa-quick-date strong{display:block;font-size:12px;margin-bottom:3px}
+                    .ltoa-quick-date small{font-size:10px;color:#8b96a5}
+                    .ltoa-picker-hint{font-size:10px;color:#98a2b3;margin-top:7px}
+                    .ltoa-picker-actions{display:flex;justify-content:flex-end;gap:9px;margin-top:22px}
+                    .ltoa-picker-btn{border:1px solid #dfe4ea;background:#fff;color:#475467;border-radius:999px;padding:10px 15px;font:inherit;font-size:12px;font-weight:650;cursor:pointer}
+                    .ltoa-picker-btn.primary{border-color:transparent;background:linear-gradient(180deg,#2c6bff,#2259da);color:#fff;box-shadow:0 14px 30px rgba(37,99,235,.22)}
+                    @media(max-width:620px){.ltoa-quick-dates{grid-template-columns:1fr}.ltoa-picker-card{padding:18px}.ltoa-picker-actions{flex-direction:column-reverse}.ltoa-picker-btn{width:100%}}
+                </style>
+                <div class="ltoa-picker-backdrop">
+                    <div class="ltoa-picker-card" role="dialog" aria-modal="true" aria-labelledby="ltoa-picker-title">
+                        <div class="ltoa-picker-head">
+                            <div>
+                                <div class="ltoa-picker-kicker">Rapport d’activité</div>
+                                <h3 id="ltoa-picker-title">Générer le rapport</h3>
+                                <p>Choisissez la journée à analyser et ajoutez une note si nécessaire.</p>
+                            </div>
+                            <button type="button" class="ltoa-picker-close" id="ltoa-picker-close" aria-label="Fermer">×</button>
                         </div>
 
-                        <div style="margin-bottom: 20px;">
-                            <label style="display: block; margin-bottom: 8px; color: #666; font-size: 13px;">
-                                Raccourcis :
-                            </label>
-                            <div style="display: flex; gap: 8px; flex-wrap: wrap;">
-                                <button class="ltoa-quick-date" data-date="${formatDate(today)}" style="
-                                    flex: 1;
-                                    padding: 10px;
-                                    border: 2px solid #c62828;
-                                    background: #fff;
-                                    border-radius: 6px;
-                                    cursor: pointer;
-                                    font-size: 13px;
-                                    color: #c62828;
-                                    font-weight: 500;
-                                    transition: all 0.2s;
-                                ">
-                                    📆 Aujourd'hui<br>
-                                    <small style="color: #888;">${formatDate(today)}</small>
-                                </button>
-                                <button class="ltoa-quick-date" data-date="${formatDate(yesterday)}" style="
-                                    flex: 1;
-                                    padding: 10px;
-                                    border: 2px solid #1976d2;
-                                    background: #fff;
-                                    border-radius: 6px;
-                                    cursor: pointer;
-                                    font-size: 13px;
-                                    color: #1976d2;
-                                    font-weight: 500;
-                                    transition: all 0.2s;
-                                ">
-                                    ⏪ Hier<br>
-                                    <small style="color: #888;">${formatDate(yesterday)}</small>
-                                </button>
-                                <button class="ltoa-quick-date" data-date="${formatDate(twoDaysAgo)}" style="
-                                    flex: 1;
-                                    padding: 10px;
-                                    border: 2px solid #7b1fa2;
-                                    background: #fff;
-                                    border-radius: 6px;
-                                    cursor: pointer;
-                                    font-size: 13px;
-                                    color: #7b1fa2;
-                                    font-weight: 500;
-                                    transition: all 0.2s;
-                                ">
-                                    ⏪⏪ Avant-hier<br>
-                                    <small style="color: #888;">${formatDate(twoDaysAgo)}</small>
-                                </button>
+                        <div class="ltoa-picker-field">
+                            <label class="ltoa-picker-label" for="ltoa-date-input">Date du rapport</label>
+                            <input class="ltoa-picker-input" type="date" id="ltoa-date-input" value="${formatDateInput(today)}" max="${formatDateInput(today)}">
+                            <div class="ltoa-quick-dates">
+                                <button type="button" class="ltoa-quick-date active" data-date="${formatDate(today)}"><strong>Aujourd’hui</strong><small>${formatDate(today)}</small></button>
+                                <button type="button" class="ltoa-quick-date" data-date="${formatDate(yesterday)}"><strong>Hier</strong><small>${formatDate(yesterday)}</small></button>
+                                <button type="button" class="ltoa-quick-date" data-date="${formatDate(twoDaysAgo)}"><strong>Avant-hier</strong><small>${formatDate(twoDaysAgo)}</small></button>
                             </div>
                         </div>
 
-                        <div style="margin-bottom:20px;padding:12px 14px;background:#f5f7fa;border:1px solid #e0e0e0;border-radius:8px;">
-                            <div style="font-size:13px;font-weight:600;color:#333;">Connexion Aircall</div>
-                            <div style="font-size:11px;color:#777;margin-top:3px;">Sécurisée via Netlify · aucune configuration nécessaire</div>
+                        <div class="ltoa-picker-field">
+                            <label class="ltoa-picker-label" for="ltoa-report-notes">Note ou précision complémentaire <span style="font-weight:500;color:#98a2b3">· facultatif</span></label>
+                            <textarea class="ltoa-picker-note" id="ltoa-report-notes" placeholder="Ex. rendez-vous extérieur, travail de fond, incident technique, précision sur un dossier…">${Utils.escapeHtml(REPORT_NOTES)}</textarea>
+                            <div class="ltoa-picker-hint">La note apparaîtra en haut du rapport uniquement si elle est renseignée.</div>
                         </div>
 
-                        <div style="display: flex; gap: 10px; margin-top: 25px;">
-                            <button id="ltoa-date-cancel" style="
-                                flex: 1;
-                                padding: 12px;
-                                border: 2px solid #ccc;
-                                background: #fff;
-                                border-radius: 8px;
-                                cursor: pointer;
-                                font-size: 14px;
-                                color: #666;
-                                transition: all 0.2s;
-                            ">Annuler</button>
-                            <button id="ltoa-date-confirm" style="
-                                flex: 1;
-                                padding: 12px;
-                                border: none;
-                                background: linear-gradient(135deg, #c62828, #b71c1c);
-                                border-radius: 8px;
-                                cursor: pointer;
-                                font-size: 14px;
-                                color: white;
-                                font-weight: 500;
-                                transition: all 0.2s;
-                            ">📊 Générer le rapport</button>
+                        <div class="ltoa-picker-actions">
+                            <button type="button" id="ltoa-date-cancel" class="ltoa-picker-btn">Annuler</button>
+                            <button type="button" id="ltoa-date-confirm" class="ltoa-picker-btn primary">Générer le rapport</button>
                         </div>
                     </div>
                 </div>
@@ -5580,81 +5538,53 @@
 
             document.body.appendChild(modal);
 
-            // Focus sur l'input date
             const dateInput = document.getElementById('ltoa-date-input');
+            const noteInput = document.getElementById('ltoa-report-notes');
             dateInput.focus();
 
-            // Styles hover pour les boutons
-            const styleHover = document.createElement('style');
-            styleHover.textContent = `
-                .ltoa-quick-date:hover {
-                    transform: translateY(-2px);
-                    box-shadow: 0 4px 12px rgba(0,0,0,0.15);
-                }
-                #ltoa-date-input:focus {
-                    border-color: #c62828;
-                    outline: none;
-                }
-                #ltoa-date-cancel:hover {
-                    background: #f5f5f5;
-                }
-                #ltoa-date-confirm:hover {
-                    transform: translateY(-1px);
-                    box-shadow: 0 4px 12px rgba(198, 40, 40, 0.4);
-                }
-            `;
-            modal.appendChild(styleHover);
+            const cancel = () => {
+                modal.remove();
+                resolve(null);
+            };
 
-            // Événements boutons rapides
             modal.querySelectorAll('.ltoa-quick-date').forEach(btn => {
                 btn.addEventListener('click', () => {
-                    const date = btn.getAttribute('data-date');
-                    // Convertir en format input (YYYY-MM-DD)
-                    const parts = date.split('/');
+                    const parts = btn.dataset.date.split('/');
                     dateInput.value = `${parts[2]}-${parts[1]}-${parts[0]}`;
-                    // Effet visuel
-                    modal.querySelectorAll('.ltoa-quick-date').forEach(b => {
-                        b.style.background = '#fff';
-                        b.style.fontWeight = '500';
-                    });
-                    btn.style.background = btn.style.borderColor;
-                    btn.style.color = '#fff';
+                    modal.querySelectorAll('.ltoa-quick-date').forEach(item => item.classList.remove('active'));
+                    btn.classList.add('active');
                 });
             });
 
-            // Annuler
-            document.getElementById('ltoa-date-cancel').addEventListener('click', () => {
-                modal.remove();
-                resolve(null);
+            dateInput.addEventListener('change', () => {
+                modal.querySelectorAll('.ltoa-quick-date').forEach(item => {
+                    const parts = item.dataset.date.split('/');
+                    const inputValue = `${parts[2]}-${parts[1]}-${parts[0]}`;
+                    item.classList.toggle('active', inputValue === dateInput.value);
+                });
             });
 
-            // Confirmer
+            document.getElementById('ltoa-date-cancel').addEventListener('click', cancel);
+            document.getElementById('ltoa-picker-close').addEventListener('click', cancel);
+
             document.getElementById('ltoa-date-confirm').addEventListener('click', () => {
-                const inputValue = dateInput.value; // Format YYYY-MM-DD
-                if (inputValue) {
-                    REPORT_NOTES = document.getElementById('ltoa-report-notes')?.value.trim() || '';
-                    const parts = inputValue.split('-');
-                    const formattedDate = `${parts[2]}/${parts[1]}/${parts[0]}`; // DD/MM/YYYY
-                    modal.remove();
-                    resolve(formattedDate);
-                }
+                const inputValue = dateInput.value;
+                if (!inputValue) return;
+                REPORT_NOTES = noteInput?.value.trim() || '';
+                const parts = inputValue.split('-');
+                const formattedDate = `${parts[2]}/${parts[1]}/${parts[0]}`;
+                modal.remove();
+                resolve(formattedDate);
             });
 
-            // Fermer en cliquant en dehors
-            modal.querySelector(':first-child').addEventListener('click', (e) => {
-                if (e.target === e.currentTarget) {
-                    modal.remove();
-                    resolve(null);
-                }
+            modal.querySelector('.ltoa-picker-backdrop').addEventListener('click', (e) => {
+                if (e.target === e.currentTarget) cancel();
             });
 
-            // Touche Entrée pour confirmer, Echap pour annuler
             modal.addEventListener('keydown', (e) => {
-                if (e.key === 'Enter') {
+                if (e.key === 'Escape') cancel();
+                if (e.key === 'Enter' && e.target !== noteInput) {
                     document.getElementById('ltoa-date-confirm').click();
-                } else if (e.key === 'Escape') {
-                    modal.remove();
-                    resolve(null);
                 }
             });
         });
