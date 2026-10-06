@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         LTOA Modulr - Rapport Quotidien
 // @namespace    https://github.com/BiggerThanTheMall/tampermonkey-ltoa
-// @version      5.4.1
+// @version      5.5.0
 // @description  Génération automatique du rapport d’activité quotidien dans Modulr
 // @author       LTOA Assurances
 // @match        https://courtage.modulr.fr/*
@@ -3154,881 +3154,696 @@
         // VUE PAR CLIENT
         // ============================================
         showByClientView() {
-            try {
-                const { emailsSent, emailsAffected, aircallCalls, tasksCompleted, tasksOverdue, logs, estimates, policies, claims, user, date, clientIndex } = this.data;
+    try {
+        const {
+            emailsSent = [], emailsAffected = [], aircallCalls = [],
+            tasksCompleted = [], tasksOverdue = [], logs = [],
+            estimates = [], policies = [], claims = [],
+            user = '', date = ''
+        } = this.data;
 
-                // Vérifier si c'est un rapport pour un jour passé
-                const realToday = Utils.getRealTodayDate();
-                const isPastDate = date !== realToday;
+        const existing = document.getElementById('ltoa-client-view-modal');
+        if (existing) existing.remove();
 
-                // Regrouper toutes les données par client (utiliser l'ID client comme clé si disponible)
-                const clientsMap = new Map();
+        const normalize = value => String(value || '')
+            .normalize('NFD').replace(/[\u0300-\u036f]/g, '')
+            .toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
 
-                // Helper pour ajouter une entrée à un client
-                const addToClient = (clientName, clientId, clientEmail, type, item) => {
-                    // Utiliser l'ID client comme clé principale si disponible
-                    let key = clientId ? `id_${clientId}` : (clientName || 'Sans client associé');
+        const clientsMap = new Map();
 
-                    if (!clientName || clientName === 'N/A' || clientName === 'Non associé') {
-                        if (!clientId) {
-                            key = 'Sans client associé';
-                            clientName = 'Sans client associé';
-                        }
-                    }
+        const addToClient = (clientName, clientId, clientEmail, type, item) => {
+            const cleanName = clientName && !['N/A', 'Non associé', 'Non associe'].includes(clientName)
+                ? String(clientName).trim()
+                : '';
+            const key = clientId ? `id_${clientId}` : (cleanName ? `name_${normalize(cleanName)}` : 'unresolved');
 
-                    if (!clientsMap.has(key)) {
-                        clientsMap.set(key, {
-                            name: clientName || 'Client inconnu',
-                            id: clientId,
-                            email: clientEmail,
-                            emailsSent: [],
-                            emailsAffected: [],
-                            aircallCalls: [],
-                            tasksCompleted: [],
-                            tasksOverdue: [],
-                            estimates: [],
-                            policies: [],
-                            claims: [],
-                            logs: []
-                        });
-                    }
-
-                    // Mettre à jour les infos si on a de meilleures données
-                    const client = clientsMap.get(key);
-                    if (clientId && !client.id) client.id = clientId;
-                    if (clientEmail && !client.email) client.email = clientEmail;
-                    if (clientName && clientName !== 'Sans client associé' && client.name === 'Client inconnu') {
-                        client.name = clientName;
-                    }
-
-                    client[type].push(item);
-                };
-
-                // Emails envoyés - utiliser les données enrichies si disponibles
-                emailsSent.forEach(e => {
-                    const clientName = e.clientName || e.recipientName || e.to || null;
-                    const clientId = e.clientId || null;
-                    const clientEmail = e.toEmail || null;
-                    addToClient(clientName, clientId, clientEmail, 'emailsSent', e);
+            if (!clientsMap.has(key)) {
+                clientsMap.set(key, {
+                    name: cleanName || 'Sans client associé',
+                    id: clientId || null,
+                    email: clientEmail || null,
+                    emailsSent: [],
+                    emailsAffected: [],
+                    aircallCalls: [],
+                    tasksCompleted: [],
+                    tasksOverdue: [],
+                    estimates: [],
+                    policies: [],
+                    claims: [],
+                    logs: []
                 });
+            }
 
-                // Emails affectés - utiliser les données enrichies si disponibles
-                emailsAffected.forEach(e => {
-                    const clientName = e.clientName || e.fromName || e.from || null;
-                    const clientId = e.clientId || null;
-                    const clientEmail = e.fromEmail || null;
-                    addToClient(clientName, clientId, clientEmail, 'emailsAffected', e);
-                });
+            const client = clientsMap.get(key);
+            if (cleanName && client.name === 'Sans client associé') client.name = cleanName;
+            if (clientId && !client.id) client.id = clientId;
+            if (clientEmail && !client.email) client.email = clientEmail;
+            if (client[type]) client[type].push(item);
+        };
 
-                // Appels Aircall - regrouper par nom de contact
-                // Essayer de matcher avec les clients existants (nom entre parenthèses, etc.)
-                (aircallCalls || []).forEach(call => {
-                    const contactName = call.contact || 'Contact inconnu';
-                    const contactLower = contactName.toLowerCase().trim();
+        emailsSent.forEach(item => addToClient(
+            item.clientName || item.recipientName || item.to || item.toEmail,
+            item.clientId,
+            item.clientEmail || item.toEmail,
+            'emailsSent',
+            item
+        ));
 
-                    // Chercher un client existant qui correspond
-                    let matchedKey = null;
-                    clientsMap.forEach((client, key) => {
-                        const clientNameLower = client.name.toLowerCase();
-                        // Match direct
-                        if (clientNameLower.includes(contactLower) || contactLower.includes(clientNameLower)) {
-                            matchedKey = key;
-                        }
-                        // Match avec nom entre parenthèses (ex: "MAUD'AUTO (maude mancini)")
-                        const parenMatch = clientNameLower.match(/\(([^)]+)\)/);
-                        if (parenMatch) {
-                            const nameInParen = parenMatch[1].toLowerCase().trim();
-                            if (nameInParen.includes(contactLower) || contactLower.includes(nameInParen)) {
-                                matchedKey = key;
-                            }
-                        }
-                        // Match par parties du nom
-                        if (!matchedKey) {
-                            const contactParts = contactLower.split(/[\s,]+/).filter(p => p.length > 2);
-                            const clientParts = clientNameLower.split(/[\s,()]+/).filter(p => p.length > 2);
-                            let matchCount = 0;
-                            for (const cp of contactParts) {
-                                if (clientParts.some(clp => clp.includes(cp) || cp.includes(clp))) {
-                                    matchCount++;
-                                }
-                            }
-                            // Si au moins 2 parties matchent ou toutes les parties du contact matchent
-                            if (matchCount >= 2 || (contactParts.length > 0 && matchCount === contactParts.length)) {
-                                matchedKey = key;
-                            }
-                        }
-                    });
+        emailsAffected.forEach(item => addToClient(
+            item.clientName || item.fromName || item.from || item.fromEmail,
+            item.clientId,
+            item.clientEmail || item.fromEmail,
+            'emailsAffected',
+            item
+        ));
 
-                    if (matchedKey) {
-                        clientsMap.get(matchedKey).aircallCalls.push(call);
-                        Utils.log(`Appel "${contactName}" associé au client "${clientsMap.get(matchedKey).name}"`);
-                    } else {
-                        addToClient(contactName, null, null, 'aircallCalls', call);
-                    }
-                });
+        tasksCompleted.forEach(item => addToClient(
+            item.clientName || item.client,
+            item.clientId,
+            item.clientEmail,
+            'tasksCompleted',
+            item
+        ));
 
-                // Tâches terminées
-                tasksCompleted.forEach(t => {
-                    addToClient(t.client, t.clientId, null, 'tasksCompleted', t);
-                });
+        tasksOverdue.forEach(item => addToClient(
+            item.clientName || item.client,
+            item.clientId,
+            item.clientEmail,
+            'tasksOverdue',
+            item
+        ));
 
-                // Tâches en retard
-                tasksOverdue.forEach(t => {
-                    addToClient(t.client, t.clientId, null, 'tasksOverdue', t);
-                });
+        estimates.forEach(item => addToClient(
+            item.clientName || item.entityName,
+            item.clientId,
+            item.clientEmail,
+            'estimates',
+            item
+        ));
 
-                // Devis - utiliser les données enrichies
-                estimates.forEach(e => {
-                    const clientName = e.clientName || e.entityName;
-                    addToClient(clientName, e.clientId, e.clientEmail, 'estimates', e);
-                });
+        policies.forEach(item => addToClient(
+            item.clientName || item.entityName,
+            item.clientId,
+            item.clientEmail,
+            'policies',
+            item
+        ));
 
-                // Contrats - utiliser les données enrichies
-                policies.forEach(p => {
-                    const clientName = p.clientName || p.entityName;
-                    addToClient(clientName, p.clientId, p.clientEmail, 'policies', p);
-                });
+        claims.forEach(item => addToClient(
+            item.clientName || item.entityName,
+            item.clientId,
+            item.clientEmail,
+            'claims',
+            item
+        ));
 
-                // Sinistres - utiliser les données enrichies
-                claims.forEach(c => {
-                    const clientName = c.clientName || c.entityName;
-                    addToClient(clientName, c.clientId, c.clientEmail, 'claims', c);
-                });
+        logs.forEach(item => {
+            const table = normalize(`${item.tableRaw || ''} ${item.table || ''}`);
+            if (/utilisateur|user|collaborateur|employe/.test(table)) return;
 
-                // Logs - regrouper par client si l'ID client est présent dans les changements
-                logs.forEach(l => {
-                    // Exclure les tables qui ne sont pas des clients
-                    const tableRawLower = (l.tableRaw || '').toLowerCase();
-                    if (tableRawLower.includes('utilisateur') || tableRawLower.includes('user') ||
-                        tableRawLower.includes('collaborateur') || tableRawLower.includes('employe')) {
-                        return; // Skip - pas un client
-                    }
+            let clientId = item.clientId || null;
+            let clientName = item.clientName || null;
 
-                    // Chercher un ID client dans les changements ou dans la table
-                    let clientId = l.clientId;
-                    let clientName = l.entityName;
+            if (!clientId && /\bclient/.test(table) && /^\d+$/.test(String(item.entityId || ''))) {
+                clientId = String(item.entityId);
+                clientName = item.entityName || clientName;
+            }
 
-                    // Si c'est une table client, utiliser l'entityId
-                    if (l.tableRaw && tableRawLower.includes('client')) {
-                        clientId = l.entityId;
-                    }
+            if (!clientId && Array.isArray(item.changes)) {
+                const change = item.changes.find(c => c.fieldRaw === 'client_id');
+                const candidate = change
+                    ? [change.newValueRaw, change.oldValueRaw].find(value => /^\d+$/.test(String(value || '').trim()))
+                    : null;
+                if (candidate) clientId = String(candidate).trim();
+            }
 
-                    // Chercher dans les changements si y'a un champ client_id ou Client (ID)
-                    if (l.changes && Array.isArray(l.changes)) {
-                        for (const change of l.changes) {
-                            const fieldRaw = (change.fieldRaw || '').toLowerCase();
-                            const fieldName = (change.field || '').toLowerCase();
-                            // Chercher client_id, Client (ID), etc.
-                            if (fieldRaw === 'client_id' || fieldRaw.includes('client') && fieldRaw.includes('id') ||
-                                fieldName.includes('client') && fieldName.includes('id')) {
-                                const val = change.newValueRaw || change.newValue || change.oldValueRaw || change.oldValue;
-                                if (val && /^\d+$/.test(String(val).trim())) {
-                                    clientId = String(val).trim();
-                                    Utils.log(`Log "${l.actionRaw}" sur ${l.tableRaw}: Client ID trouvé = ${clientId}`);
-                                    break;
-                                }
-                            }
-                        }
-                    }
+            if (clientId || clientName) {
+                addToClient(clientName || item.entityName, clientId, item.clientEmail, 'logs', item);
+            }
+        });
 
-                    if (clientId) {
-                        addToClient(clientName, clientId, l.clientEmail, 'logs', l);
-                    }
-                });
+        // Les appels Aircall n'ont pas toujours d'identifiant Modulr.
+        // On les rattache seulement lorsqu'un nom correspond suffisamment,
+        // sinon ils restent dans une fiche "contact" séparée.
+        aircallCalls.forEach(call => {
+            const contactName = call.clientName || call.contact || call.phone || 'Contact inconnu';
+            const contactNorm = normalize(contactName);
+            const contactParts = contactNorm.split(' ').filter(part => part.length > 2);
+            let best = null;
+            let bestScore = 0;
 
-                // Fusionner les clients qui ont le même ID
-                const mergedClients = new Map();
-                clientsMap.forEach((client, key) => {
-                    if (client.id) {
-                        const existingKey = `id_${client.id}`;
-                        if (mergedClients.has(existingKey)) {
-                            const existing = mergedClients.get(existingKey);
-                            // Fusionner les données
-                            existing.emailsSent.push(...client.emailsSent);
-                            existing.emailsAffected.push(...client.emailsAffected);
-                            existing.aircallCalls.push(...client.aircallCalls);
-                            existing.tasksCompleted.push(...client.tasksCompleted);
-                            existing.tasksOverdue.push(...client.tasksOverdue);
-                            existing.estimates.push(...client.estimates);
-                            existing.policies.push(...client.policies);
-                            existing.claims.push(...client.claims);
-                            existing.logs.push(...client.logs);
-                            // Garder le meilleur nom/email
-                            if (!existing.email && client.email) existing.email = client.email;
-                            if (client.name && client.name !== 'Sans client associé') existing.name = client.name;
-                        } else {
-                            mergedClients.set(existingKey, client);
-                        }
-                    } else {
-                        mergedClients.set(key, client);
-                    }
-                });
+            clientsMap.forEach(client => {
+                if (!client.name || client.name === 'Sans client associé') return;
+                const clientNorm = normalize(client.name);
+                if (!clientNorm) return;
 
-                // Trier les clients par nombre d'actions (plus actifs en premier)
-                const sortedClients = Array.from(mergedClients.values()).sort((a, b) => {
-                    const countA = a.emailsSent.length + a.emailsAffected.length + a.aircallCalls.length + a.tasksCompleted.length +
-                                  a.estimates.length + a.policies.length + a.claims.length + a.logs.length;
-                    const countB = b.emailsSent.length + b.emailsAffected.length + b.aircallCalls.length + b.tasksCompleted.length +
-                                  b.estimates.length + b.policies.length + b.claims.length + b.logs.length;
-                    return countB - countA;
-                });
+                if (clientNorm === contactNorm) {
+                    best = client;
+                    bestScore = 100;
+                    return;
+                }
 
-                // Filtrer les clients sans aucune action UTILE (exclure ceux qui n'ont que des tâches en retard)
-                const activeClients = sortedClients.filter(c => {
-                    const hasUsefulActions = c.emailsSent.length + c.emailsAffected.length + c.aircallCalls.length +
-                        c.tasksCompleted.length + c.estimates.length + c.policies.length + c.claims.length + c.logs.length > 0;
-                    // Si le client n'a que des tâches en retard et rien d'autre, on l'exclut
-                    if (!hasUsefulActions && c.tasksOverdue.length > 0) {
-                        return false;
-                    }
-                    return hasUsefulActions || c.tasksOverdue.length > 0;
-                });
+                const clientParts = clientNorm.split(' ').filter(part => part.length > 2);
+                const score = contactParts.filter(part =>
+                    clientParts.some(other => other === part || other.includes(part) || part.includes(other))
+                ).length;
 
-            // Générer le HTML de la vue par client
-            const clientViewHTML = `
-                <div id="ltoa-client-view-modal" style="
-                    position: fixed;
-                    top: 0;
-                    left: 0;
-                    width: 100%;
-                    height: 100%;
-                    background: rgba(0,0,0,0.9);
-                    z-index: 1000000;
-                    overflow-y: auto;
-                    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
-                ">
-                    <div style="
-                        max-width: 1100px;
-                        margin: 20px auto;
-                        background: #f5f5f5;
-                        border-radius: 15px;
-                        padding: 25px;
-                        box-shadow: 0 10px 50px rgba(0,0,0,0.3);
-                    ">
-                        <!-- Header -->
-                        <div style="display: flex; justify-content: space-between; align-items: center; background: white; padding: 20px; border-radius: 12px; margin-bottom: 20px; box-shadow: 0 2px 8px rgba(0,0,0,0.05);">
-                            <div>
-                                <h1 style="color: #1565c0; margin: 0; font-size: 22px; font-weight: 600;">👤 Vue par Client</h1>
-                                <p style="color: #666; margin: 5px 0 0 0; font-size: 14px;">
-                                    <strong>${user}</strong> • ${date} • ${activeClients.length} clients
-                                </p>
-                            </div>
-                            <button id="ltoa-close-client-view" style="
-                                background: linear-gradient(135deg, #666, #444);
-                                color: white;
-                                border: none;
-                                padding: 12px 24px;
-                                border-radius: 8px;
-                                cursor: pointer;
-                                font-size: 13px;
-                                font-weight: bold;
-                            ">✕ Fermer</button>
-                        </div>
-
-                        <!-- Liste des clients -->
-                        ${activeClients.length > 0 ? activeClients.map((client, clientIdx) => {
-                            const clientLink = client.id ?
-                                `https://courtage.modulr.fr/fr/scripts/clients/clients_card.php?id=${client.id}` : '#';
-                            const cuid = 'c' + clientIdx + '_' + Date.now();
-
-                            return `
-                            <div style="background: white; border-radius: 12px; margin-bottom: 20px; overflow: hidden; box-shadow: 0 2px 10px rgba(0,0,0,0.08);">
-                                <!-- En-tête client avec gradient -->
-                                <div style="background: linear-gradient(135deg, #1565c0 0%, #0d47a1 100%); color: white; padding: 18px 22px;">
-                                    <div style="display: flex; justify-content: space-between; align-items: flex-start;">
-                                        <div>
-                                            <a href="${clientLink}" target="_blank" style="color: white; text-decoration: none; font-size: 18px; font-weight: 600;">
-                                                👤 ${Utils.escapeHtml(client.name)}
-                                            </a>
-                                            ${client.id ? `<span style="background: rgba(255,255,255,0.2); padding: 3px 10px; border-radius: 12px; font-size: 11px; margin-left: 10px;">N° ${client.id}</span>` : ''}
-                                            ${client.email ? `<div style="opacity: 0.8; font-size: 12px; margin-top: 5px;">📧 ${Utils.escapeHtml(client.email)}</div>` : ''}
-                                        </div>
-                                        <div style="display: flex; gap: 6px; flex-wrap: wrap;">
-                                            ${client.emailsSent.length > 0 ? `<span style="background: #2196f3; padding: 4px 12px; border-radius: 15px; font-size: 11px; font-weight: 500;">📤 ${client.emailsSent.length}</span>` : ''}
-                                            ${client.emailsAffected.length > 0 ? `<span style="background: #4caf50; padding: 4px 12px; border-radius: 15px; font-size: 11px; font-weight: 500;">📥 ${client.emailsAffected.length}</span>` : ''}
-                                            ${client.aircallCalls.length > 0 ? `<span style="background: #ff9800; padding: 4px 12px; border-radius: 15px; font-size: 11px; font-weight: 500;">📞 ${client.aircallCalls.length}</span>` : ''}
-                                            ${client.tasksCompleted.length > 0 ? `<span style="background: #ff5722; padding: 4px 12px; border-radius: 15px; font-size: 11px; font-weight: 500;">✅ ${client.tasksCompleted.length}</span>` : ''}
-                                        </div>
-                                    </div>
-                                </div>
-
-                                <!-- Contenu avec cartes colorées -->
-                                <div style="padding: 18px; display: grid; gap: 12px;">
-
-                                    ${client.emailsSent.length > 0 ? `
-                                    <!-- Emails envoyés -->
-                                    <div style="background: linear-gradient(135deg, #e3f2fd 0%, #bbdefb 100%); border-radius: 10px; padding: 15px; border-left: 4px solid #1976d2;">
-                                        <div style="font-weight: 600; color: #1565c0; margin-bottom: 10px; font-size: 14px;">📤 Emails envoyés (${client.emailsSent.length})</div>
-                                        ${client.emailsSent.map((e, eIdx) => `
-                                            <div style="background: white; border-radius: 6px; padding: 10px; margin-bottom: 6px;">
-                                                <div style="display: flex; justify-content: space-between;">
-                                                    <strong style="color: #333; font-size: 13px;">${Utils.escapeHtml(e.subject || 'Sans objet')}</strong>
-                                                    <span style="color: #1976d2; font-size: 11px; font-weight: 500;">${e.time || ''}</span>
-                                                </div>
-                                                ${e.body ? `
-                                                    <div id="email_short_${cuid}_${eIdx}" style="color: #666; font-size: 12px; margin-top: 6px; line-height: 1.4;">${Utils.escapeHtml(Utils.truncate(e.body, 150))}</div>
-                                                    ${e.body.length > 150 ? `
-                                                        <div id="email_full_${cuid}_${eIdx}" style="display: none; color: #666; font-size: 12px; margin-top: 6px; line-height: 1.4; white-space: pre-wrap;">${Utils.escapeHtml(e.body)}</div>
-                                                        <button onclick="var s=document.getElementById('email_short_${cuid}_${eIdx}');var f=document.getElementById('email_full_${cuid}_${eIdx}');if(f.style.display==='none'){f.style.display='block';s.style.display='none';this.textContent='▲ Réduire';}else{f.style.display='none';s.style.display='block';this.textContent='▼ Voir plus';}" style="background: #1976d2; color: white; border: none; padding: 4px 10px; border-radius: 4px; font-size: 11px; cursor: pointer; margin-top: 6px;">▼ Voir plus</button>
-                                                    ` : ''}
-                                                ` : ''}
-                                            </div>
-                                        `).join('')}
-                                    </div>
-                                    ` : ''}
-
-                                    ${client.emailsAffected.length > 0 ? `
-                                    <!-- Emails reçus -->
-                                    <div style="background: linear-gradient(135deg, #e8f5e9 0%, #c8e6c9 100%); border-radius: 10px; padding: 15px; border-left: 4px solid #388e3c;">
-                                        <div style="font-weight: 600; color: #2e7d32; margin-bottom: 10px; font-size: 14px;">📥 Emails reçus/affectés (${client.emailsAffected.length})</div>
-                                        ${client.emailsAffected.map(e => `
-                                            <div style="background: white; border-radius: 6px; padding: 10px; margin-bottom: 6px;">
-                                                <strong style="color: #333; font-size: 13px;">${Utils.escapeHtml(e.subject || 'Sans objet')}</strong>
-                                                <div style="color: #666; font-size: 11px; margin-top: 4px;">De: ${Utils.escapeHtml(e.from || '')} → ${Utils.escapeHtml(e.affectedTo || '')}</div>
-                                            </div>
-                                        `).join('')}
-                                    </div>
-                                    ` : ''}
-
-                                    ${client.aircallCalls.length > 0 ? `
-                                    <!-- Appels avec résumés IA complets -->
-                                    <div style="background: linear-gradient(135deg, #fff3e0 0%, #ffe0b2 100%); border-radius: 10px; padding: 15px; border-left: 4px solid #f57c00;">
-                                        <div style="font-weight: 600; color: #e65100; margin-bottom: 10px; font-size: 14px;">📞 Appels téléphoniques (${client.aircallCalls.length})</div>
-                                        ${client.aircallCalls.map(call => {
-                                            const bgColor = call.type === 'sortant' ? '#fff8e1' : '#e8f5e9';
-                                            const borderColor = call.type === 'sortant' ? '#ffb300' : '#66bb6a';
-                                            const moodIcon = call.mood === 'Positif' ? '😊' : (call.mood === 'Négatif' ? '😟' : (call.mood === 'Neutre' ? '😐' : ''));
-                                            return `
-                                            <div style="background: ${bgColor}; border-radius: 8px; padding: 12px; margin-bottom: 8px; border-left: 3px solid ${borderColor};">
-                                                <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px;">
-                                                    <span style="font-weight: 600; color: #333;">
-                                                        ${call.type === 'sortant' ? '📤 Sortant' : '📥 Entrant'}
-                                                        <span style="font-weight: normal; color: #666;">• ${call.duration || ''}</span>
-                                                        ${moodIcon ? `<span style="margin-left: 8px;">${moodIcon}</span>` : ''}
-                                                    </span>
-                                                    <span style="color: #888; font-size: 11px;">${call.time || ''}</span>
-                                                </div>
-                                                ${call.summary ? `
-                                                <div style="background: white; border-radius: 6px; padding: 10px; font-size: 12px; color: #555; line-height: 1.5;">
-                                                    <div style="color: #ff8f00; font-size: 10px; font-weight: 600; margin-bottom: 4px;">💬 RÉSUMÉ IA</div>
-                                                    ${Utils.escapeHtml(call.summary)}
-                                                </div>
-                                                ` : ''}
-                                            </div>
-                                            `;
-                                        }).join('')}
-                                    </div>
-                                    ` : ''}
-
-                                    ${client.tasksCompleted.length > 0 ? `
-                                    <!-- Tâches terminées avec heure -->
-                                    <div style="background: linear-gradient(135deg, #fff8e1 0%, #ffecb3 100%); border-radius: 10px; padding: 15px; border-left: 4px solid #ff8f00;">
-                                        <div style="font-weight: 600; color: #e65100; margin-bottom: 10px; font-size: 14px;">✅ Tâches terminées (${client.tasksCompleted.length})</div>
-                                        ${client.tasksCompleted.map((t, tIdx) => `
-                                            <div style="background: white; border-radius: 6px; padding: 10px; margin-bottom: 6px;">
-                                                <div style="display: flex; justify-content: space-between; align-items: flex-start;">
-                                                    <strong style="color: #333; font-size: 13px;">${Utils.escapeHtml(t.title)}</strong>
-                                                    ${t.closedTime ? `<span style="background: #ff8f00; color: white; padding: 2px 8px; border-radius: 10px; font-size: 10px;">⏰ ${t.closedTime}</span>` : ''}
-                                                </div>
-                                                ${t.content ? `
-                                                    <div id="task_short_${cuid}_${tIdx}" style="color: #666; font-size: 12px; margin-top: 6px; line-height: 1.4;">${Utils.escapeHtml(Utils.truncate(t.content, 120))}</div>
-                                                    ${t.content.length > 120 ? `
-                                                        <div id="task_full_${cuid}_${tIdx}" style="display: none; color: #666; font-size: 12px; margin-top: 6px; line-height: 1.4; white-space: pre-wrap;">${Utils.escapeHtml(t.content)}</div>
-                                                        <button onclick="var s=document.getElementById('task_short_${cuid}_${tIdx}');var f=document.getElementById('task_full_${cuid}_${tIdx}');if(f.style.display==='none'){f.style.display='block';s.style.display='none';this.textContent='▲ Réduire';}else{f.style.display='none';s.style.display='block';this.textContent='▼ Voir plus';}" style="background: #ff8f00; color: white; border: none; padding: 4px 10px; border-radius: 4px; font-size: 11px; cursor: pointer; margin-top: 6px;">▼ Voir plus</button>
-                                                    ` : ''}
-                                                ` : ''}
-                                            </div>
-                                        `).join('')}
-                                    </div>
-                                    ` : ''}
-
-                                    ${client.tasksOverdue.length > 0 ? `
-                                    <!-- Tâches en retard -->
-                                    <div style="background: linear-gradient(135deg, #ffebee 0%, #ffcdd2 100%); border-radius: 10px; padding: 15px; border-left: 4px solid #d32f2f;">
-                                        <div style="font-weight: 600; color: #c62828; margin-bottom: 10px; font-size: 14px;">⚠️ Tâches en retard (${client.tasksOverdue.length})</div>
-                                        ${client.tasksOverdue.map(t => `
-                                            <div style="background: white; border-radius: 6px; padding: 10px; margin-bottom: 6px;">
-                                                <strong style="color: #333; font-size: 13px;">${Utils.escapeHtml(t.title)}</strong>
-                                                <div style="color: #d32f2f; font-size: 11px; margin-top: 4px;">${t.daysOverdue}j de retard • → ${Utils.escapeHtml(t.assignedTo || 'N/A')}</div>
-                                            </div>
-                                        `).join('')}
-                                    </div>
-                                    ` : ''}
-
-                                    ${(client.estimates.length > 0 || client.policies.length > 0 || client.claims.length > 0) ? `
-                                    <!-- Documents -->
-                                    <div style="background: linear-gradient(135deg, #f3e5f5 0%, #e1bee7 100%); border-radius: 10px; padding: 15px; border-left: 4px solid #7b1fa2;">
-                                        <div style="font-weight: 600; color: #6a1b9a; margin-bottom: 10px; font-size: 14px;">📄 Documents (${client.estimates.length + client.policies.length + client.claims.length})</div>
-                                        <div style="display: flex; flex-wrap: wrap; gap: 8px;">
-                                            ${client.estimates.map(e => `<span style="background: white; color: #7b1fa2; padding: 6px 12px; border-radius: 6px; font-size: 12px;">📋 Devis ${e.entityId || ''}</span>`).join('')}
-                                            ${client.policies.map(p => `<span style="background: white; color: #00796b; padding: 6px 12px; border-radius: 6px; font-size: 12px;">📄 Contrat ${p.entityId || ''}</span>`).join('')}
-                                            ${client.claims.map(c => `<span style="background: white; color: #c62828; padding: 6px 12px; border-radius: 6px; font-size: 12px;">🚨 Sinistre ${c.entityId || ''}</span>`).join('')}
-                                        </div>
-                                    </div>
-                                    ` : ''}
-
-                                    ${client.logs.length > 0 ? `
-                                    <!-- Modifications regroupées -->
-                                    <div style="background: linear-gradient(135deg, #efebe9 0%, #d7ccc8 100%); border-radius: 10px; padding: 15px; border-left: 4px solid #5d4037;">
-                                        <div style="font-weight: 600; color: #4e342e; margin-bottom: 8px; font-size: 14px;">📝 Modifications fiche (${client.logs.length})</div>
-                                        <div style="display: flex; flex-wrap: wrap; gap: 8px;">
-                                            ${(() => {
-                                                const grouped = {};
-                                                client.logs.forEach(l => {
-                                                    const action = l.action || 'Modification';
-                                                    const key = action.replace(/[✨✏️➕🗑️📝]/g, '').trim();
-                                                    if (!grouped[key]) grouped[key] = 0;
-                                                    grouped[key]++;
-                                                });
-                                                return Object.entries(grouped).map(([action, count]) => {
-                                                    let icon = '📝';
-                                                    let bg = '#f5f5f5';
-                                                    if (action.toLowerCase().includes('création') || action.toLowerCase().includes('insert')) { icon = '✨'; bg = '#e8f5e9'; }
-                                                    else if (action.toLowerCase().includes('modification') || action.toLowerCase().includes('update')) { icon = '✏️'; bg = '#fff3e0'; }
-                                                    else if (action.toLowerCase().includes('suppression') || action.toLowerCase().includes('delete')) { icon = '🗑️'; bg = '#ffebee'; }
-                                                    return `<span style="background: ${bg}; padding: 6px 12px; border-radius: 15px; font-size: 12px; font-weight: 500;">${icon} ${count} ${action.toLowerCase()}</span>`;
-                                                }).join('');
-                                            })()}
-                                        </div>
-                                    </div>
-                                    ` : ''}
-                                </div>
-                            </div>
-                            `;
-                        }).join('') : '<div style="background: white; border-radius: 12px; padding: 50px; text-align: center; color: #666;">Aucun client concerné aujourd\'hui</div>'}
-
-                        <!-- Footer -->
-                        <div style="text-align: center; color: #999; padding-top: 15px; font-size: 12px;">
-                            📊 Vue par Client - LTOA Modulr Script v5.4.0
-                        </div>
-                    </div>
-                </div>
-            `;
-
-            // Afficher la vue
-            document.body.insertAdjacentHTML('beforeend', clientViewHTML);
-
-            // Event listeners
-            document.getElementById('ltoa-close-client-view').addEventListener('click', () => {
-                document.getElementById('ltoa-client-view-modal').remove();
+                if (score > bestScore) {
+                    best = client;
+                    bestScore = score;
+                }
             });
 
-            } catch (error) {
-                console.error('[LTOA-Report] Erreur Vue par Client:', error);
-                alert('❌ Erreur lors de la génération de la vue par client. Consultez la console F12.');
+            if (best && (bestScore >= 2 || (contactParts.length === 1 && bestScore === 1))) {
+                best.aircallCalls.push(call);
+            } else {
+                addToClient(contactName, call.clientId, null, 'aircallCalls', call);
             }
-        },
+        });
+
+        const mergeById = new Map();
+        clientsMap.forEach(client => {
+            const key = client.id ? `id_${client.id}` : `name_${normalize(client.name) || 'unresolved'}`;
+            if (!mergeById.has(key)) {
+                mergeById.set(key, client);
+                return;
+            }
+            const target = mergeById.get(key);
+            for (const field of ['emailsSent','emailsAffected','aircallCalls','tasksCompleted','tasksOverdue','estimates','policies','claims','logs']) {
+                target[field].push(...client[field]);
+            }
+            if (!target.email && client.email) target.email = client.email;
+            if ((!target.name || target.name === 'Sans client associé') && client.name) target.name = client.name;
+        });
+
+        const activityCount = client =>
+            client.emailsSent.length + client.emailsAffected.length + client.aircallCalls.length +
+            client.tasksCompleted.length + client.estimates.length + client.policies.length +
+            client.claims.length + client.logs.length;
+
+        const activeClients = Array.from(mergeById.values())
+            .filter(client => activityCount(client) > 0)
+            .sort((a, b) => activityCount(b) - activityCount(a) || String(a.name).localeCompare(String(b.name), 'fr'));
+
+        const renderText = text => {
+            const clean = Utils.cleanRichText(text || '');
+            if (!clean) return '';
+            if (clean.length <= 220) return `<div class="ltoa-sub-text">${Utils.escapeHtml(clean)}</div>`;
+            return `
+                <details class="ltoa-more">
+                    <summary>Voir le contenu complet</summary>
+                    <div class="ltoa-sub-text">${Utils.escapeHtml(clean)}</div>
+                </details>`;
+        };
+
+        const renderGroup = (title, count, body) => {
+            if (!count) return '';
+            return `
+                <section class="ltoa-client-group">
+                    <div class="ltoa-client-group-head">
+                        <strong>${Utils.escapeHtml(title)}</strong>
+                        <span>${count}</span>
+                    </div>
+                    <div class="ltoa-client-group-body">${body}</div>
+                </section>`;
+        };
+
+        const renderDocument = (item, type) => {
+            const classification = ActivityDictionary.classify(item);
+            return `
+                <div class="ltoa-sub-row">
+                    <div>
+                        <strong>${Utils.escapeHtml(type)} n° ${Utils.escapeHtml(item.entityId || '—')}</strong>
+                        <small>${Utils.escapeHtml(classification.label)}</small>
+                    </div>
+                    <div class="ltoa-sub-row-detail">${Utils.escapeHtml(ActivityDictionary.summarize(item))}</div>
+                </div>`;
+        };
+
+        const cards = activeClients.map((client, index) => {
+            const total = activityCount(client);
+            const clientLink = client.id
+                ? `https://courtage.modulr.fr/fr/scripts/clients/clients_card.php?id=${encodeURIComponent(client.id)}`
+                : '';
+            const search = normalize(`${client.name} ${client.email || ''} ${client.id || ''}`);
+
+            const sent = client.emailsSent.map(email => `
+                <div class="ltoa-sub-row">
+                    <div>
+                        <strong>${Utils.escapeHtml(email.subject || 'Sans objet')}</strong>
+                        <small>${Utils.escapeHtml(email.time || email.date || '')} · À ${Utils.escapeHtml(email.toEmail || email.to || '—')}</small>
+                    </div>
+                    ${renderText(email.body)}
+                </div>`).join('');
+
+            const received = client.emailsAffected.map(email => `
+                <div class="ltoa-sub-row">
+                    <div>
+                        <strong>${Utils.escapeHtml(email.subject || 'Sans objet')}</strong>
+                        <small>${Utils.escapeHtml(email.time || email.date || '')} · De ${Utils.escapeHtml(email.from || email.fromEmail || '—')}</small>
+                    </div>
+                    ${email.affectedTo ? `<div class="ltoa-sub-row-detail">Affecté à ${Utils.escapeHtml(email.affectedTo)}</div>` : ''}
+                    ${renderText(email.body)}
+                </div>`).join('');
+
+            const calls = client.aircallCalls.map(call => `
+                <div class="ltoa-sub-row">
+                    <div class="ltoa-call-head">
+                        <div>
+                            <strong>${call.type === 'sortant' ? 'Appel sortant' : 'Appel entrant'} · ${Utils.escapeHtml(call.contact || call.phone || '—')}</strong>
+                            <small>${Utils.escapeHtml(call.time || '')} · ${Utils.escapeHtml(call.duration || '0s')}${call.mood ? ` · ${Utils.escapeHtml(call.mood)}` : ''}</small>
+                        </div>
+                    </div>
+                    ${call.summary ? `<div class="ltoa-sub-text"><b>Résumé</b><br>${Utils.escapeHtml(call.summary)}</div>` : ''}
+                    ${call.topics?.length ? `<div class="ltoa-mini-pills">${call.topics.map(topic => `<span>${Utils.escapeHtml(typeof topic === 'string' ? topic : (topic?.name || topic?.content || ''))}</span>`).join('')}</div>` : ''}
+                    ${call.actionItems?.length ? `
+                        <div class="ltoa-sub-text"><b>Actions à suivre</b><br>${call.actionItems.map(item => `• ${Utils.escapeHtml(item)}`).join('<br>')}</div>` : ''}
+                    ${call.transcript ? `
+                        <details class="ltoa-more">
+                            <summary>Voir la transcription</summary>
+                            <div class="ltoa-sub-text">${Utils.escapeHtml(call.transcript)}</div>
+                        </details>` : ''}
+                </div>`).join('');
+
+            const completedTasks = client.tasksCompleted.map(task => `
+                <div class="ltoa-sub-row">
+                    <div>
+                        <strong>${Utils.escapeHtml(task.title || 'Tâche')}</strong>
+                        <small>${Utils.escapeHtml(task.closedTime || task.time || task.completedDate || '')}${task.closedBy ? ` · clôturée par ${Utils.escapeHtml(task.closedBy)}` : ''}</small>
+                    </div>
+                    ${renderText(task.content)}
+                </div>`).join('');
+
+            const overdueTasks = client.tasksOverdue.map(task => `
+                <div class="ltoa-sub-row">
+                    <div>
+                        <strong>${Utils.escapeHtml(task.title || 'Tâche')}</strong>
+                        <small>${Utils.escapeHtml(task.dueDate || '')}${task.daysOverdue ? ` · ${task.daysOverdue} j de retard` : ''}</small>
+                    </div>
+                    ${renderText(task.content)}
+                </div>`).join('');
+
+            const documents = [
+                ...client.estimates.map(item => renderDocument(item, 'Devis')),
+                ...client.policies.map(item => renderDocument(item, 'Contrat')),
+                ...client.claims.map(item => renderDocument(item, 'Sinistre'))
+            ].join('');
+
+            const clientLogs = client.logs.map(log => `
+                <div class="ltoa-sub-row">
+                    <div>
+                        <strong>${Utils.escapeHtml(log.table || log.tableRaw || 'Modification')}</strong>
+                        <small>${Utils.escapeHtml(log.date || '')} · ${Utils.escapeHtml(log.action || log.actionRaw || '')}</small>
+                    </div>
+                    <div class="ltoa-sub-row-detail">${Utils.escapeHtml(ActivityDictionary.summarize(log))}</div>
+                </div>`).join('');
+
+            return `
+                <details class="ltoa-client-card" data-search="${Utils.escapeHtml(search)}" ${index < 3 ? 'open' : ''}>
+                    <summary>
+                        <div class="ltoa-client-ident">
+                            <strong>${Utils.escapeHtml(client.name || 'Sans client associé')}</strong>
+                            <span>${client.id ? `Client n° ${Utils.escapeHtml(client.id)}` : 'Contact non relié à une fiche Modulr'}${client.email ? ` · ${Utils.escapeHtml(client.email)}` : ''}</span>
+                        </div>
+                        <div class="ltoa-client-counts">
+                            ${client.emailsSent.length ? `<span>${client.emailsSent.length} envoyés</span>` : ''}
+                            ${client.emailsAffected.length ? `<span>${client.emailsAffected.length} reçus</span>` : ''}
+                            ${client.aircallCalls.length ? `<span>${client.aircallCalls.length} appels</span>` : ''}
+                            ${client.tasksCompleted.length ? `<span>${client.tasksCompleted.length} tâches</span>` : ''}
+                            ${(client.estimates.length + client.policies.length + client.claims.length) ? `<span>${client.estimates.length + client.policies.length + client.claims.length} dossiers</span>` : ''}
+                            <b>${total}</b>
+                        </div>
+                    </summary>
+                    <div class="ltoa-client-body">
+                        ${clientLink ? `<a class="ltoa-client-link" href="${clientLink}" target="_blank" rel="noopener">Ouvrir la fiche client dans Modulr ↗</a>` : ''}
+                        ${renderGroup('Emails envoyés', client.emailsSent.length, sent)}
+                        ${renderGroup('Emails reçus / affectés', client.emailsAffected.length, received)}
+                        ${renderGroup('Appels', client.aircallCalls.length, calls)}
+                        ${renderGroup('Tâches terminées', client.tasksCompleted.length, completedTasks)}
+                        ${renderGroup('Tâches en retard', client.tasksOverdue.length, overdueTasks)}
+                        ${renderGroup('Devis, contrats et sinistres', client.estimates.length + client.policies.length + client.claims.length, documents)}
+                        ${renderGroup('Autres modifications de la fiche', client.logs.length, clientLogs)}
+                    </div>
+                </details>`;
+        }).join('');
+
+        const totalActions = activeClients.reduce((sum, client) => sum + activityCount(client), 0);
+
+        const html = `
+            <div id="ltoa-client-view-modal" class="ltoa-secondary-modal">
+                <style>
+                    #ltoa-client-view-modal{position:fixed;inset:0;z-index:2147483647;background:#f5f7fb;color:#101828;font-family:Inter,-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Arial,sans-serif;overflow:auto}
+                    #ltoa-client-view-modal *{box-sizing:border-box}
+                    .ltoa-secondary-top{position:sticky;top:0;z-index:10;background:rgba(248,250,253,.92);backdrop-filter:blur(16px);border-bottom:1px solid #e5e9ef;padding:13px 22px;display:flex;align-items:center;justify-content:space-between;gap:16px}
+                    .ltoa-secondary-title h2{margin:0;font-size:25px;letter-spacing:-.03em}.ltoa-secondary-title p{margin:4px 0 0;color:#7a8695;font-size:12px}
+                    .ltoa-secondary-actions{display:flex;align-items:center;gap:8px}.ltoa-secondary-btn{border:1px solid #dfe4ea;background:#fff;border-radius:999px;padding:9px 12px;font-size:12px;color:#344054;cursor:pointer}.ltoa-secondary-btn:hover{background:#f7f9fb}
+                    .ltoa-secondary-main{max-width:1280px;margin:0 auto;padding:22px 24px 44px}
+                    .ltoa-secondary-summary{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:10px;margin-bottom:14px}.ltoa-summary-card{background:#fff;border:1px solid #e4e8ed;border-radius:17px;padding:14px 16px}.ltoa-summary-card strong{display:block;font-size:24px}.ltoa-summary-card span{font-size:10px;color:#7a8695}
+                    .ltoa-client-tools{display:flex;gap:8px;align-items:center;margin:0 0 14px}.ltoa-client-search{flex:1;border:1px solid #dfe4ea;background:#fff;border-radius:14px;padding:11px 13px;font:inherit;font-size:12px;outline:none}.ltoa-client-search:focus{border-color:#a9c0f7;box-shadow:0 0 0 4px rgba(37,99,235,.07)}
+                    .ltoa-client-card{background:#fff;border:1px solid #e4e8ed;border-radius:18px;margin-bottom:10px;overflow:hidden;box-shadow:0 8px 24px rgba(15,23,42,.025)}.ltoa-client-card>summary{list-style:none;cursor:pointer;padding:15px 16px;display:grid;grid-template-columns:minmax(0,1fr) auto;gap:14px;align-items:center}.ltoa-client-card>summary::-webkit-details-marker{display:none}.ltoa-client-card[open]>summary{border-bottom:1px solid #edf0f3;background:#fbfcfe}
+                    .ltoa-client-ident strong{display:block;font-size:14px}.ltoa-client-ident span{display:block;color:#7a8695;font-size:10px;margin-top:3px}.ltoa-client-counts{display:flex;gap:6px;align-items:center;justify-content:flex-end;flex-wrap:wrap}.ltoa-client-counts span{font-size:9px;border:1px solid #e6eaf0;background:#f8fafc;border-radius:999px;padding:5px 8px;color:#596579}.ltoa-client-counts b{min-width:31px;text-align:center;border-radius:999px;background:#eef3ff;color:#315ea8;padding:6px 8px;font-size:11px}
+                    .ltoa-client-body{padding:14px 16px 17px}.ltoa-client-link{display:inline-block;margin-bottom:12px;color:#2259da;text-decoration:none;font-size:11px;font-weight:700}.ltoa-client-group{border-top:1px solid #edf0f3;padding:13px 0}.ltoa-client-group:first-of-type{border-top:0}.ltoa-client-group-head{display:flex;justify-content:space-between;align-items:center;margin-bottom:7px}.ltoa-client-group-head strong{font-size:11px;text-transform:uppercase;letter-spacing:.05em;color:#657184}.ltoa-client-group-head span{font-size:10px;background:#f1f4f7;border-radius:999px;padding:3px 7px;color:#667085}
+                    .ltoa-client-group-body{display:grid;gap:7px}.ltoa-sub-row{border:1px solid #edf0f3;background:#fcfdff;border-radius:13px;padding:10px 11px}.ltoa-sub-row strong{font-size:11px}.ltoa-sub-row small{display:block;margin-top:3px;font-size:9px;color:#84909f}.ltoa-sub-row-detail{font-size:10px;color:#526071;margin-top:6px}.ltoa-sub-text{white-space:pre-wrap;background:#f5f7fa;border-radius:9px;padding:8px 9px;margin-top:7px;font-size:10px;line-height:1.45;color:#445160}.ltoa-more{margin-top:7px}.ltoa-more summary{cursor:pointer;color:#315ea8;font-size:10px;font-weight:700}.ltoa-mini-pills{display:flex;gap:5px;flex-wrap:wrap;margin-top:7px}.ltoa-mini-pills span{font-size:9px;border:1px solid #e6eaf0;border-radius:999px;padding:4px 7px;background:#fff;color:#667085}
+                    .ltoa-empty-secondary{background:#fff;border:1px solid #e4e8ed;border-radius:18px;padding:42px;text-align:center;color:#7a8695;font-size:12px}
+                    @media(max-width:760px){.ltoa-secondary-top{align-items:flex-start}.ltoa-secondary-actions{flex-wrap:wrap;justify-content:flex-end}.ltoa-secondary-main{padding:14px}.ltoa-secondary-summary{grid-template-columns:1fr}.ltoa-client-tools{flex-wrap:wrap}.ltoa-client-search{flex-basis:100%}.ltoa-client-card>summary{grid-template-columns:1fr}.ltoa-client-counts{justify-content:flex-start}}
+                </style>
+                <header class="ltoa-secondary-top">
+                    <div class="ltoa-secondary-title">
+                        <h2>Vue par client</h2>
+                        <p>${Utils.escapeHtml(user)} · ${Utils.escapeHtml(date)} · même activité, regroupée dossier par dossier</p>
+                    </div>
+                    <div class="ltoa-secondary-actions">
+                        <button type="button" class="ltoa-secondary-btn" id="ltoa-client-expand">Tout ouvrir</button>
+                        <button type="button" class="ltoa-secondary-btn" id="ltoa-client-collapse">Tout replier</button>
+                        <button type="button" class="ltoa-secondary-btn" id="ltoa-close-client-view">Fermer</button>
+                    </div>
+                </header>
+                <main class="ltoa-secondary-main">
+                    <div class="ltoa-secondary-summary">
+                        <div class="ltoa-summary-card"><strong>${activeClients.length}</strong><span>clients / contacts concernés</span></div>
+                        <div class="ltoa-summary-card"><strong>${totalActions}</strong><span>actions rattachées à un client</span></div>
+                        <div class="ltoa-summary-card"><strong>${tasksCompleted.length}</strong><span>tâches terminées sur la journée</span></div>
+                    </div>
+                    <div class="ltoa-client-tools">
+                        <input id="ltoa-client-search" class="ltoa-client-search" type="search" placeholder="Rechercher un client, un email ou un numéro de fiche…">
+                    </div>
+                    <div id="ltoa-client-list">
+                        ${cards || '<div class="ltoa-empty-secondary">Aucun client ou contact concerné par l’activité de cette journée.</div>'}
+                    </div>
+                </main>
+            </div>`;
+
+        document.body.insertAdjacentHTML('beforeend', html);
+        const modal = document.getElementById('ltoa-client-view-modal');
+        const close = () => modal?.remove();
+
+        document.getElementById('ltoa-close-client-view')?.addEventListener('click', close);
+        document.getElementById('ltoa-client-expand')?.addEventListener('click', () => {
+            modal.querySelectorAll('.ltoa-client-card').forEach(card => card.open = true);
+        });
+        document.getElementById('ltoa-client-collapse')?.addEventListener('click', () => {
+            modal.querySelectorAll('.ltoa-client-card').forEach(card => card.open = false);
+        });
+        document.getElementById('ltoa-client-search')?.addEventListener('input', event => {
+            const query = normalize(event.target.value);
+            modal.querySelectorAll('.ltoa-client-card').forEach(card => {
+                const match = !query || String(card.dataset.search || '').includes(query);
+                card.style.display = match ? '' : 'none';
+                if (query && match) card.open = true;
+            });
+        });
+
+        const escHandler = event => {
+            if (event.key === 'Escape' && document.getElementById('ltoa-client-view-modal')) {
+                close();
+                document.removeEventListener('keydown', escHandler);
+            }
+        };
+        document.addEventListener('keydown', escHandler);
+    } catch (error) {
+        console.error('[LTOA-Report] Erreur Vue par Client:', error);
+        alert('Erreur lors de la génération de la vue par client. Consultez la console F12.');
+    }
+},
 
         // ============================================
         // VUE CHRONOLOGIQUE
         // ============================================
         showChronoView() {
-            try {
-                const { emailsSent, emailsAffected, aircallCalls, tasksCompleted, logs, estimates, policies, claims, user, date } = this.data;
+    try {
+        const {
+            emailsSent = [], emailsAffected = [], aircallCalls = [],
+            tasksCompleted = [], logs = [], estimates = [],
+            policies = [], claims = [], user = '', date = ''
+        } = this.data;
 
-                // Collecter toutes les actions avec leur heure
-                const allActions = [];
+        const existing = document.getElementById('ltoa-chrono-modal');
+        if (existing) existing.remove();
 
-                // Parser l'heure d'une chaîne (format HH:MM ou HH:MM:SS)
-                const parseTime = (timeStr) => {
-                    if (!timeStr) return null;
-                    // Chercher un pattern HH:MM ou HH:MM:SS
-                    const match = timeStr.match(/(\d{1,2}):(\d{2})(?::(\d{2}))?/);
-                    if (match) {
-                        const hours = parseInt(match[1]);
-                        const minutes = parseInt(match[2]);
-                        const seconds = match[3] ? parseInt(match[3]) : 0;
-                        return hours * 3600 + minutes * 60 + seconds;
-                    }
-                    return null;
-                };
+        const parseTime = value => {
+            const match = String(value || '').match(/(\d{1,2}):(\d{2})(?::(\d{2}))?/);
+            if (!match) return null;
+            const hours = parseInt(match[1], 10);
+            const minutes = parseInt(match[2], 10);
+            const seconds = parseInt(match[3] || '0', 10);
+            return hours * 3600 + minutes * 60 + seconds;
+        };
 
-                // Extraire l'heure d'une date complète DD/MM/YYYY HH:MM
-                const extractTime = (dateStr) => {
-                    if (!dateStr) return null;
-                    const match = dateStr.match(/(\d{1,2}):(\d{2})/);
-                    if (match) {
-                        return `${match[1].padStart(2, '0')}:${match[2]}`;
-                    }
-                    return null;
-                };
-
-                // Emails envoyés
-                emailsSent.forEach(e => {
-                    const time = extractTime(e.date);
-                    if (time) {
-                        allActions.push({
-                            type: 'email_sent',
-                            icon: '📤',
-                            color: '#1976d2',
-                            label: 'Email envoyé',
-                            time: time,
-                            timeSeconds: parseTime(time),
-                            title: e.subject || 'Sans objet',
-                            detail: `À: ${e.to || 'N/A'}`,
-                            client: e.client || ''
-                        });
-                    }
-                });
-
-                // Emails affectés
-                emailsAffected.forEach(e => {
-                    const time = extractTime(e.date);
-                    if (time) {
-                        allActions.push({
-                            type: 'email_affected',
-                            icon: '📥',
-                            color: '#388e3c',
-                            label: 'Email affecté',
-                            time: time,
-                            timeSeconds: parseTime(time),
-                            title: e.subject || 'Sans objet',
-                            detail: `De: ${e.from || 'N/A'}`,
-                            client: e.client || ''
-                        });
-                    }
-                });
-
-                // Appels Aircall
-                (aircallCalls || []).forEach(c => {
-                    const time = c.time;
-                    if (time) {
-                        allActions.push({
-                            type: 'call',
-                            icon: c.type === 'sortant' ? '📞↗' : '📞↙',
-                            color: '#ff8f00',
-                            label: c.type === 'sortant' ? 'Appel sortant' : 'Appel entrant',
-                            time: time,
-                            timeSeconds: parseTime(time),
-                            title: c.contact || 'Inconnu',
-                            detail: `Durée: ${c.duration || '0s'}${c.mood ? ' | ' + c.mood : ''}`,
-                            client: c.contact || '',
-                            summary: c.summary
-                        });
-                    }
-                });
-
-                // Tâches terminées (utiliser l'heure de clôture)
-                tasksCompleted.forEach(t => {
-                    const time = t.closedTime || extractTime(t.completedDate);
-                    if (time) {
-                        allActions.push({
-                            type: 'task',
-                            icon: '✅',
-                            color: '#f57c00',
-                            label: 'Tâche terminée',
-                            time: time,
-                            timeSeconds: parseTime(time),
-                            title: t.title || 'Sans titre',
-                            detail: `Client: ${t.client || 'N/A'}`,
-                            client: t.client || '',
-                            summary: t.content
-                        });
-                    }
-                });
-
-                // Logs/Actions diverses
-                logs.forEach(l => {
-                    const time = extractTime(l.date);
-                    if (time) {
-                        allActions.push({
-                            type: 'log',
-                            icon: '📝',
-                            color: '#7b1fa2',
-                            label: l.type || 'Action',
-                            time: time,
-                            timeSeconds: parseTime(time),
-                            title: l.action || l.description || 'Action',
-                            detail: `Client: ${l.client || 'N/A'}`,
-                            client: l.client || ''
-                        });
-                    }
-                });
-
-                // Devis
-                estimates.forEach(e => {
-                    const time = extractTime(e.date);
-                    if (time) {
-                        allActions.push({
-                            type: 'estimate',
-                            icon: '📋',
-                            color: '#0097a7',
-                            label: 'Devis',
-                            time: time,
-                            timeSeconds: parseTime(time),
-                            title: e.reference || 'Devis',
-                            detail: `Client: ${e.client || 'N/A'}`,
-                            client: e.client || ''
-                        });
-                    }
-                });
-
-                // Contrats
-                policies.forEach(p => {
-                    const time = extractTime(p.date);
-                    if (time) {
-                        allActions.push({
-                            type: 'policy',
-                            icon: '📄',
-                            color: '#3f51b5',
-                            label: 'Contrat',
-                            time: time,
-                            timeSeconds: parseTime(time),
-                            title: p.reference || 'Contrat',
-                            detail: `Client: ${p.client || 'N/A'}`,
-                            client: p.client || ''
-                        });
-                    }
-                });
-
-                // Sinistres
-                claims.forEach(c => {
-                    const time = extractTime(c.date);
-                    if (time) {
-                        allActions.push({
-                            type: 'claim',
-                            icon: '🚨',
-                            color: '#c2185b',
-                            label: 'Sinistre',
-                            time: time,
-                            timeSeconds: parseTime(time),
-                            title: c.reference || 'Sinistre',
-                            detail: `Client: ${c.client || 'N/A'}`,
-                            client: c.client || ''
-                        });
-                    }
-                });
-
-                // Trier par heure (croissant)
-                allActions.sort((a, b) => {
-                    if (a.timeSeconds === null) return 1;
-                    if (b.timeSeconds === null) return -1;
-                    return a.timeSeconds - b.timeSeconds;
-                });
-
-                // Calculer le temps écoulé entre chaque action
-                const formatDuration = (seconds) => {
-                    if (seconds < 60) return `${seconds}s`;
-                    if (seconds < 3600) {
-                        const mins = Math.floor(seconds / 60);
-                        const secs = seconds % 60;
-                        return secs > 0 ? `${mins}min ${secs}s` : `${mins}min`;
-                    }
-                    const hours = Math.floor(seconds / 3600);
-                    const mins = Math.floor((seconds % 3600) / 60);
-                    return mins > 0 ? `${hours}h ${mins}min` : `${hours}h`;
-                };
-
-                // Générer le HTML de la timeline
-                let timelineHTML = '';
-                for (let i = 0; i < allActions.length; i++) {
-                    const action = allActions[i];
-                    const prevAction = i > 0 ? allActions[i - 1] : null;
-
-                    // Calculer le temps écoulé depuis l'action précédente
-                    let elapsedHTML = '';
-                    if (prevAction && action.timeSeconds !== null && prevAction.timeSeconds !== null) {
-                        const elapsed = action.timeSeconds - prevAction.timeSeconds;
-                        if (elapsed > 0) {
-                            const elapsedFormatted = formatDuration(elapsed);
-                            elapsedHTML = `
-                                <div style="
-                                    display: flex;
-                                    align-items: center;
-                                    padding: 8px 0;
-                                    margin-left: 18px;
-                                ">
-                                    <div style="
-                                        width: 2px;
-                                        height: 30px;
-                                        background: linear-gradient(to bottom, ${prevAction.color}, ${action.color});
-                                        margin-right: 15px;
-                                    "></div>
-                                    <div style="
-                                        background: #f5f5f5;
-                                        padding: 4px 12px;
-                                        border-radius: 12px;
-                                        font-size: 11px;
-                                        color: #666;
-                                    ">
-                                        ⏱️ ${elapsedFormatted}
-                                    </div>
-                                </div>
-                            `;
-                        }
-                    }
-
-                    timelineHTML += `
-                        ${elapsedHTML}
-                        <div style="
-                            display: flex;
-                            align-items: flex-start;
-                            padding: 10px 0;
-                        ">
-                            <div style="
-                                width: 38px;
-                                height: 38px;
-                                border-radius: 50%;
-                                background: ${action.color};
-                                display: flex;
-                                align-items: center;
-                                justify-content: center;
-                                font-size: 16px;
-                                flex-shrink: 0;
-                                box-shadow: 0 2px 8px ${action.color}40;
-                            ">${action.icon}</div>
-                            <div style="
-                                flex: 1;
-                                margin-left: 15px;
-                                background: white;
-                                border: 1px solid #e0e0e0;
-                                border-radius: 8px;
-                                padding: 12px 15px;
-                                box-shadow: 0 1px 3px rgba(0,0,0,0.05);
-                            ">
-                                <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 5px;">
-                                    <span style="
-                                        background: ${action.color}20;
-                                        color: ${action.color};
-                                        padding: 2px 8px;
-                                        border-radius: 4px;
-                                        font-size: 11px;
-                                        font-weight: bold;
-                                    ">${action.label}</span>
-                                    <span style="
-                                        font-size: 13px;
-                                        color: #333;
-                                        font-weight: bold;
-                                    ">🕐 ${action.time}</span>
-                                </div>
-                                <div style="font-size: 14px; font-weight: 600; color: #333; margin-bottom: 3px;">
-                                    ${Utils.escapeHtml(action.title)}
-                                </div>
-                                <div style="font-size: 12px; color: #666;">
-                                    ${Utils.escapeHtml(action.detail)}
-                                </div>
-                                ${action.summary ? `
-                                    <div style="
-                                        margin-top: 8px;
-                                        padding: 8px;
-                                        background: #f9f9f9;
-                                        border-radius: 4px;
-                                        font-size: 11px;
-                                        color: #555;
-                                        border-left: 3px solid ${action.color};
-                                    ">
-                                        ✨ ${Utils.escapeHtml(Utils.truncate(action.summary, 150))}
-                                    </div>
-                                ` : ''}
-                            </div>
-                        </div>
-                    `;
-                }
-
-                // Calculer le temps total de travail
-                let totalWorkTime = '';
-                if (allActions.length >= 2) {
-                    const first = allActions[0];
-                    const last = allActions[allActions.length - 1];
-                    if (first.timeSeconds !== null && last.timeSeconds !== null) {
-                        const total = last.timeSeconds - first.timeSeconds;
-                        totalWorkTime = `<div style="
-                            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-                            color: white;
-                            padding: 15px 20px;
-                            border-radius: 10px;
-                            margin-bottom: 20px;
-                            display: flex;
-                            justify-content: space-between;
-                            align-items: center;
-                        ">
-                            <div>
-                                <div style="font-size: 12px; opacity: 0.9;">Plage horaire de travail</div>
-                                <div style="font-size: 18px; font-weight: bold;">${first.time} → ${last.time}</div>
-                            </div>
-                            <div style="text-align: right;">
-                                <div style="font-size: 12px; opacity: 0.9;">Durée totale</div>
-                                <div style="font-size: 18px; font-weight: bold;">${formatDuration(total)}</div>
-                            </div>
-                        </div>`;
-                    }
-                }
-
-                // Créer le modal
-                const modalHTML = `
-                    <div id="ltoa-chrono-modal" style="
-                        position: fixed;
-                        top: 0;
-                        left: 0;
-                        width: 100%;
-                        height: 100%;
-                        background: rgba(0,0,0,0.85);
-                        z-index: 9999999;
-                        overflow-y: auto;
-                        font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
-                    ">
-                        <div style="
-                            max-width: 800px;
-                            margin: 20px auto;
-                            background: #fafafa;
-                            border-radius: 12px;
-                            padding: 25px;
-                            box-shadow: 0 10px 50px rgba(0,0,0,0.3);
-                        ">
-                            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px;">
-                                <div>
-                                    <h2 style="margin: 0; color: #333; font-size: 20px;">🕐 Vue Chronologique</h2>
-                                    <p style="margin: 5px 0 0 0; color: #666; font-size: 13px;">
-                                        ${Utils.escapeHtml(user)} - ${date} - ${allActions.length} actions
-                                    </p>
-                                </div>
-                                <button id="ltoa-close-chrono" style="
-                                    background: #666;
-                                    color: white;
-                                    border: none;
-                                    padding: 10px 20px;
-                                    border-radius: 5px;
-                                    cursor: pointer;
-                                    font-size: 13px;
-                                ">✕ Fermer</button>
-                            </div>
-
-                            ${totalWorkTime}
-
-                            <div style="padding: 10px 0;">
-                                ${allActions.length > 0 ? timelineHTML : `
-                                    <p style="text-align: center; color: #666; padding: 40px;">
-                                        Aucune action avec heure trouvée pour cette journée.
-                                    </p>
-                                `}
-                            </div>
-                        </div>
-                    </div>
-                `;
-
-                document.body.insertAdjacentHTML('beforeend', modalHTML);
-
-                document.getElementById('ltoa-close-chrono').addEventListener('click', () => {
-                    document.getElementById('ltoa-chrono-modal').remove();
-                });
-
-                // Fermer avec Escape
-                const escHandler = (e) => {
-                    if (e.key === 'Escape') {
-                        const modal = document.getElementById('ltoa-chrono-modal');
-                        if (modal) {
-                            modal.remove();
-                            document.removeEventListener('keydown', escHandler);
-                        }
-                    }
-                };
-                document.addEventListener('keydown', escHandler);
-
-            } catch (error) {
-                console.error('[LTOA-Report] Erreur Vue Chronologique:', error);
-                alert('❌ Erreur lors de la génération de la vue chronologique. Consultez la console F12.');
+        const extractTime = (...values) => {
+            for (const value of values) {
+                const match = String(value || '').match(/(\d{1,2}):(\d{2})/);
+                if (match) return `${match[1].padStart(2, '0')}:${match[2]}`;
             }
-        },
+            return '';
+        };
+
+        const formatDuration = seconds => {
+            if (!Number.isFinite(seconds) || seconds < 0) return '';
+            if (seconds < 60) return `${seconds}s`;
+            if (seconds < 3600) {
+                const minutes = Math.floor(seconds / 60);
+                const rest = seconds % 60;
+                return rest ? `${minutes}min ${rest}s` : `${minutes}min`;
+            }
+            const hours = Math.floor(seconds / 3600);
+            const minutes = Math.floor((seconds % 3600) / 60);
+            return minutes ? `${hours}h ${minutes}min` : `${hours}h`;
+        };
+
+        const actions = [];
+        const push = action => {
+            const time = action.time || '';
+            const seconds = parseTime(time);
+            if (!time || seconds === null) return;
+            actions.push({ ...action, timeSeconds: seconds });
+        };
+
+        emailsSent.forEach(item => push({
+            category: 'emails',
+            label: 'Email envoyé',
+            time: extractTime(item.time, item.date),
+            title: item.subject || 'Sans objet',
+            client: item.clientName || item.recipientName || item.toEmail || item.to || '',
+            detail: `À ${item.toEmail || item.to || '—'}`,
+            summary: item.body || ''
+        }));
+
+        emailsAffected.forEach(item => push({
+            category: 'emails',
+            label: 'Email reçu / affecté',
+            time: extractTime(item.time, item.date),
+            title: item.subject || 'Sans objet',
+            client: item.clientName || item.fromName || item.from || item.fromEmail || '',
+            detail: `De ${item.from || item.fromEmail || '—'}${item.affectedTo ? ` · affecté à ${item.affectedTo}` : ''}`,
+            summary: item.body || ''
+        }));
+
+        aircallCalls.forEach(item => push({
+            category: 'calls',
+            label: item.type === 'sortant' ? 'Appel sortant' : 'Appel entrant',
+            time: extractTime(item.time),
+            title: item.contact || item.phone || 'Contact inconnu',
+            client: item.clientName || item.contact || '',
+            detail: `${item.duration || '0s'}${item.mood ? ` · ${item.mood}` : ''}`,
+            summary: item.summary || '',
+            extra: [
+                item.topics?.length ? `Sujets : ${item.topics.map(topic => typeof topic === 'string' ? topic : (topic?.name || topic?.content || '')).filter(Boolean).join(', ')}` : '',
+                item.actionItems?.length ? `Actions : ${item.actionItems.join(' · ')}` : ''
+            ].filter(Boolean).join('\n')
+        }));
+
+        tasksCompleted.forEach(item => push({
+            category: 'tasks',
+            label: 'Tâche terminée',
+            time: extractTime(item.closedTime, item.time, item.completedDate),
+            title: item.title || 'Tâche',
+            client: item.clientName || item.client || '',
+            detail: item.closedBy ? `Clôturée par ${item.closedBy}` : 'Tâche clôturée',
+            summary: item.content || ''
+        }));
+
+        estimates.forEach(item => {
+            const classification = ActivityDictionary.classify(item);
+            push({
+                category: 'estimates',
+                label: `Devis · ${classification.label}`,
+                time: extractTime(item.date),
+                title: `Devis n° ${item.entityId || '—'}`,
+                client: item.clientName || item.entityName || '',
+                detail: ActivityDictionary.summarize(item),
+                summary: ''
+            });
+        });
+
+        policies.forEach(item => {
+            const classification = ActivityDictionary.classify(item);
+            push({
+                category: 'policies',
+                label: `Contrat · ${classification.label}`,
+                time: extractTime(item.date),
+                title: `Contrat n° ${item.entityId || '—'}`,
+                client: item.clientName || item.entityName || '',
+                detail: ActivityDictionary.summarize(item),
+                summary: ''
+            });
+        });
+
+        claims.forEach(item => {
+            const classification = ActivityDictionary.classify(item);
+            push({
+                category: 'claims',
+                label: `Sinistre · ${classification.label}`,
+                time: extractTime(item.date),
+                title: `Sinistre n° ${item.entityId || '—'}`,
+                client: item.clientName || item.entityName || '',
+                detail: ActivityDictionary.summarize(item),
+                summary: ''
+            });
+        });
+
+        logs.forEach(item => push({
+            category: 'other',
+            label: item.table || item.tableRaw || 'Autre action',
+            time: extractTime(item.date),
+            title: item.entityName || item.action || item.actionRaw || 'Action',
+            client: item.clientName || '',
+            detail: ActivityDictionary.summarize(item),
+            summary: ''
+        }));
+
+        actions.sort((a, b) => a.timeSeconds - b.timeSeconds);
+
+        const counts = actions.reduce((acc, action) => {
+            acc[action.category] = (acc[action.category] || 0) + 1;
+            return acc;
+        }, {});
+
+        const categoryLabels = {
+            emails: 'Emails',
+            calls: 'Appels',
+            tasks: 'Tâches',
+            estimates: 'Devis',
+            policies: 'Contrats',
+            claims: 'Sinistres',
+            other: 'Autres'
+        };
+
+        const first = actions[0] || null;
+        const last = actions[actions.length - 1] || null;
+        const spanSeconds = first && last ? Math.max(0, last.timeSeconds - first.timeSeconds) : 0;
+
+        const actionRows = actions.map((action, index) => {
+            const previous = index > 0 ? actions[index - 1] : null;
+            const elapsed = previous ? action.timeSeconds - previous.timeSeconds : 0;
+            const search = String(`${action.title} ${action.client} ${action.detail} ${action.label}`).toLowerCase();
+
+            return `
+                <article class="ltoa-time-row" data-category="${action.category}" data-search="${Utils.escapeHtml(search)}">
+                    <div class="ltoa-time-col">
+                        <strong>${Utils.escapeHtml(action.time)}</strong>
+                        ${elapsed > 60 ? `<span>+${Utils.escapeHtml(formatDuration(elapsed))}</span>` : ''}
+                    </div>
+                    <div class="ltoa-time-line"><i></i></div>
+                    <div class="ltoa-time-card">
+                        <div class="ltoa-time-card-head">
+                            <span class="ltoa-time-tag">${Utils.escapeHtml(action.label)}</span>
+                            ${action.client ? `<span class="ltoa-time-client">${Utils.escapeHtml(action.client)}</span>` : ''}
+                        </div>
+                        <strong class="ltoa-time-title">${Utils.escapeHtml(action.title)}</strong>
+                        ${action.detail ? `<div class="ltoa-time-detail">${Utils.escapeHtml(action.detail)}</div>` : ''}
+                        ${action.summary || action.extra ? `
+                            <details class="ltoa-time-more">
+                                <summary>Voir le détail</summary>
+                                ${action.summary ? `<div>${Utils.escapeHtml(Utils.cleanRichText(action.summary))}</div>` : ''}
+                                ${action.extra ? `<div>${Utils.escapeHtml(action.extra)}</div>` : ''}
+                            </details>` : ''}
+                    </div>
+                </article>`;
+        }).join('');
+
+        const filterButtons = Object.entries(categoryLabels)
+            .filter(([key]) => counts[key])
+            .map(([key, label]) => `<button type="button" class="ltoa-chrono-filter" data-filter="${key}">${label}<b>${counts[key]}</b></button>`)
+            .join('');
+
+        const html = `
+            <div id="ltoa-chrono-modal">
+                <style>
+                    #ltoa-chrono-modal{position:fixed;inset:0;z-index:2147483647;background:#f5f7fb;color:#101828;font-family:Inter,-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Arial,sans-serif;overflow:auto}
+                    #ltoa-chrono-modal *{box-sizing:border-box}
+                    .ltoa-chrono-top{position:sticky;top:0;z-index:10;background:rgba(248,250,253,.92);backdrop-filter:blur(16px);border-bottom:1px solid #e5e9ef;padding:13px 22px;display:flex;align-items:center;justify-content:space-between;gap:16px}.ltoa-chrono-title h2{margin:0;font-size:25px;letter-spacing:-.03em}.ltoa-chrono-title p{margin:4px 0 0;color:#7a8695;font-size:12px}.ltoa-chrono-close{border:1px solid #dfe4ea;background:#fff;border-radius:999px;padding:9px 12px;font-size:12px;color:#344054;cursor:pointer}
+                    .ltoa-chrono-main{max-width:1050px;margin:0 auto;padding:22px 24px 44px}.ltoa-chrono-summary{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:10px;margin-bottom:13px}.ltoa-chrono-stat{background:#fff;border:1px solid #e4e8ed;border-radius:17px;padding:14px 16px}.ltoa-chrono-stat strong{display:block;font-size:22px}.ltoa-chrono-stat span{font-size:10px;color:#7a8695}
+                    .ltoa-chrono-tools{display:flex;gap:7px;align-items:center;flex-wrap:wrap;background:#fff;border:1px solid #e4e8ed;border-radius:17px;padding:10px;margin-bottom:16px}.ltoa-chrono-search{flex:1;min-width:220px;border:0;background:#f6f8fb;border-radius:11px;padding:10px 11px;font:inherit;font-size:11px;outline:none}.ltoa-chrono-filter{border:1px solid #e4e8ed;background:#fff;border-radius:999px;padding:7px 9px;font-size:10px;color:#526071;cursor:pointer}.ltoa-chrono-filter b{margin-left:5px}.ltoa-chrono-filter.active{background:#eef3ff;border-color:#d5e0ff;color:#315ea8}
+                    .ltoa-timeline{position:relative}.ltoa-time-row{display:grid;grid-template-columns:72px 20px minmax(0,1fr);gap:8px;align-items:stretch;margin-bottom:8px}.ltoa-time-col{text-align:right;padding-top:11px}.ltoa-time-col strong{display:block;font-size:11px}.ltoa-time-col span{display:block;font-size:8px;color:#98a2b3;margin-top:3px}.ltoa-time-line{position:relative}.ltoa-time-line:before{content:"";position:absolute;left:9px;top:0;bottom:-9px;width:1px;background:#dfe5ec}.ltoa-time-line i{position:absolute;left:5px;top:14px;width:9px;height:9px;border-radius:50%;background:#5d7fd8;box-shadow:0 0 0 4px #edf3ff}
+                    .ltoa-time-card{background:#fff;border:1px solid #e4e8ed;border-radius:15px;padding:11px 12px;box-shadow:0 7px 22px rgba(15,23,42,.025)}.ltoa-time-card-head{display:flex;justify-content:space-between;gap:9px;align-items:center;margin-bottom:5px}.ltoa-time-tag{font-size:9px;background:#f1f4f8;border-radius:999px;padding:4px 7px;color:#596579;font-weight:700}.ltoa-time-client{font-size:9px;color:#667085}.ltoa-time-title{display:block;font-size:12px}.ltoa-time-detail{font-size:10px;color:#667085;margin-top:4px}.ltoa-time-more{margin-top:8px;border-top:1px solid #edf0f3;padding-top:7px}.ltoa-time-more summary{cursor:pointer;color:#315ea8;font-size:9px;font-weight:700}.ltoa-time-more div{white-space:pre-wrap;font-size:10px;color:#4d5968;line-height:1.5;margin-top:7px;background:#f7f9fb;border-radius:9px;padding:8px}
+                    .ltoa-chrono-empty{background:#fff;border:1px solid #e4e8ed;border-radius:18px;padding:42px;text-align:center;color:#7a8695;font-size:12px}
+                    @media(max-width:760px){.ltoa-chrono-main{padding:14px}.ltoa-chrono-summary{grid-template-columns:1fr 1fr}.ltoa-time-row{grid-template-columns:48px 16px minmax(0,1fr)}.ltoa-time-col strong{font-size:10px}.ltoa-time-line:before{left:7px}.ltoa-time-line i{left:3px}.ltoa-time-card-head{align-items:flex-start;flex-direction:column}.ltoa-chrono-top{align-items:flex-start}}
+                </style>
+                <header class="ltoa-chrono-top">
+                    <div class="ltoa-chrono-title">
+                        <h2>Chronologie</h2>
+                        <p>${Utils.escapeHtml(user)} · ${Utils.escapeHtml(date)} · ordre réel des actions horodatées</p>
+                    </div>
+                    <button type="button" id="ltoa-close-chrono" class="ltoa-chrono-close">Fermer</button>
+                </header>
+                <main class="ltoa-chrono-main">
+                    <div class="ltoa-chrono-summary">
+                        <div class="ltoa-chrono-stat"><strong>${actions.length}</strong><span>actions horodatées</span></div>
+                        <div class="ltoa-chrono-stat"><strong>${first ? Utils.escapeHtml(first.time) : '—'}</strong><span>première action</span></div>
+                        <div class="ltoa-chrono-stat"><strong>${last ? Utils.escapeHtml(last.time) : '—'}</strong><span>dernière action</span></div>
+                        <div class="ltoa-chrono-stat"><strong>${actions.length > 1 ? Utils.escapeHtml(formatDuration(spanSeconds)) : '—'}</strong><span>plage entre première et dernière</span></div>
+                    </div>
+                    <div class="ltoa-chrono-tools">
+                        <input id="ltoa-chrono-search" class="ltoa-chrono-search" type="search" placeholder="Rechercher une action ou un client…">
+                        <button type="button" class="ltoa-chrono-filter active" data-filter="all">Tout<b>${actions.length}</b></button>
+                        ${filterButtons}
+                    </div>
+                    <div id="ltoa-timeline" class="ltoa-timeline">
+                        ${actionRows || '<div class="ltoa-chrono-empty">Aucune action horodatée disponible pour cette journée.</div>'}
+                    </div>
+                </main>
+            </div>`;
+
+        document.body.insertAdjacentHTML('beforeend', html);
+        const modal = document.getElementById('ltoa-chrono-modal');
+        const searchInput = document.getElementById('ltoa-chrono-search');
+        let currentFilter = 'all';
+
+        const applyFilters = () => {
+            const query = String(searchInput?.value || '').toLowerCase().trim();
+            modal.querySelectorAll('.ltoa-time-row').forEach(row => {
+                const categoryOk = currentFilter === 'all' || row.dataset.category === currentFilter;
+                const searchOk = !query || String(row.dataset.search || '').includes(query);
+                row.style.display = categoryOk && searchOk ? '' : 'none';
+            });
+        };
+
+        modal.querySelectorAll('.ltoa-chrono-filter').forEach(button => {
+            button.addEventListener('click', () => {
+                currentFilter = button.dataset.filter || 'all';
+                modal.querySelectorAll('.ltoa-chrono-filter').forEach(item => item.classList.remove('active'));
+                button.classList.add('active');
+                applyFilters();
+            });
+        });
+
+        searchInput?.addEventListener('input', applyFilters);
+
+        const close = () => modal?.remove();
+        document.getElementById('ltoa-close-chrono')?.addEventListener('click', close);
+
+        const escHandler = event => {
+            if (event.key === 'Escape' && document.getElementById('ltoa-chrono-modal')) {
+                close();
+                document.removeEventListener('keydown', escHandler);
+            }
+        };
+        document.addEventListener('keydown', escHandler);
+    } catch (error) {
+        console.error('[LTOA-Report] Erreur Vue Chronologique:', error);
+        alert('Erreur lors de la génération de la vue chronologique. Consultez la console F12.');
+    }
+},
 
         exportHTML() {
             const { emailsSent, emailsAffected, aircallCalls, pendingEmailsCount, tasksCompleted, tasksOverdue, logs, estimates, policies, claims, user, date, notes, aircallStatus } = this.data;
