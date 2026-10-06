@@ -1128,96 +1128,65 @@
     // Récupère le nombre d'emails assignés (en attente) pour l'utilisateur
     // depuis la liste des utilisateurs dans le menu d'affectation
     const PendingEmailsCollector = {
+        normalizeName(value) {
+            return String(value || '')
+                .normalize('NFD').replace(/[\u0300-\u036f]/g, '')
+                .toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
+        },
+
         async collect(connectedUser, updateLoader) {
             Utils.log('=== COLLECTE EMAILS EN ATTENTE ===');
             Utils.log('Utilisateur recherché:', connectedUser);
 
             try {
-                updateLoader('Récupération emails en attente...');
+                if (typeof updateLoader === 'function') updateLoader('Récupération emails en attente...');
 
-                // Charger la page des emails SANS filtre (pour voir les non traités)
                 const url = 'https://courtage.modulr.fr/fr/scripts/emails/emails_list.php?email_page=1';
                 const html = await Utils.fetchPage(url);
                 const doc = Utils.parseHTML(html);
+                const wanted = this.normalizeName(connectedUser);
+                const wantedParts = wanted.split(' ').filter(Boolean);
 
-                // Chercher dans les liens d'affectation le pattern "NOM (XX)"
-                // Le lien peut être /emails/assign/ ou /intranet/emails/assign/
-                const assignLinks = doc.querySelectorAll('a[href*="emails/assign"]');
-                Utils.log(`${assignLinks.length} liens d'affectation trouvés`);
+                // Le menu d'affectation contient le compteur de référence de Modulr.
+                // On cherche d'abord un nom COMPLET afin d'éviter de confondre Eddy,
+                // Nadia, Doryan ou Ghaïs simplement parce qu'ils partagent "Kalah".
+                const candidates = Array.from(doc.querySelectorAll('a, button, li, span'))
+                    .map(el => ({
+                        el,
+                        text: (el.textContent || '').replace(/\s+/g, ' ').trim()
+                    }))
+                    .filter(item => /\(\s*\d+\s*\)\s*$/.test(item.text));
 
-                const userLower = connectedUser.toLowerCase().trim();
-                const userParts = userLower.split(/[\s,]+/).filter(p => p.length > 2);
-                let pendingCount = 0;
-                let foundUser = false;
-
-                for (const link of assignLinks) {
-                    // Récupérer le texte en nettoyant les espaces et caractères spéciaux
-                    let text = link.textContent.trim();
-                    // Supprimer les espaces multiples et &nbsp;
-                    text = text.replace(/\s+/g, ' ').trim();
-
-                    Utils.log(`  Lien brut: "${text}"`);
-
-                    // Pattern: "Nom Prénom (XX)" - chercher le nombre entre parenthèses
-                    // Le nom peut contenir des espaces, donc on cherche tout avant les parenthèses
-                    const match = text.match(/^(.+?)\s*\((\d+)\)\s*$/);
-                    if (match) {
-                        const userName = match[1].trim();
-                        const count = parseInt(match[2]);
-                        const nameLower = userName.toLowerCase().trim();
-
-                        Utils.log(`    Parsé: nom="${userName}", count=${count}`);
-
-                        // Vérifier si c'est l'utilisateur connecté
-                        let isMatch = false;
-
-                        // Match exact
-                        if (nameLower === userLower) {
-                            isMatch = true;
-                            Utils.log(`    -> Match exact`);
-                        }
-                        // Match inclusion
-                        if (!isMatch && (nameLower.includes(userLower) || userLower.includes(nameLower))) {
-                            isMatch = true;
-                            Utils.log(`    -> Match inclusion`);
-                        }
-                        // Match par parties du nom (prénom OU nom)
-                        if (!isMatch) {
-                            const nameParts = nameLower.split(/[\s,]+/).filter(p => p.length > 2);
-                            let matchedParts = 0;
-                            for (const np of nameParts) {
-                                for (const up of userParts) {
-                                    if (np === up) {
-                                        matchedParts++;
-                                        break;
-                                    }
-                                }
-                            }
-                            // Si au moins une partie du nom correspond
-                            if (matchedParts > 0) {
-                                isMatch = true;
-                                Utils.log(`    -> Match par parties (${matchedParts} correspondances)`);
-                            }
-                        }
-
-                        if (isMatch) {
-                            pendingCount = count;
-                            foundUser = true;
-                            Utils.log(`✓ MATCH TROUVÉ: "${userName}" = ${pendingCount} emails en attente`);
-                            break; // Prendre le premier match
-                        }
-                    } else {
-                        Utils.log(`    -> Pas de pattern (XX) trouvé`);
-                    }
+                const parsed = [];
+                for (const item of candidates) {
+                    const match = item.text.match(/^(.+?)\s*\(\s*(\d+)\s*\)\s*$/);
+                    if (!match) continue;
+                    parsed.push({
+                        name: match[1].trim(),
+                        normalized: this.normalizeName(match[1]),
+                        count: parseInt(match[2], 10) || 0
+                    });
                 }
 
-                if (!foundUser) {
-                    Utils.log(`✗ Aucun match trouvé pour "${connectedUser}" parmi les ${assignLinks.length} liens`);
+                let found = parsed.find(item => item.normalized === wanted);
+
+                // Fallback tolérant aux variantes d'affichage, mais il faut que TOUS
+                // les éléments du nom correspondent. Jamais de match sur le seul nom de famille.
+                if (!found && wantedParts.length) {
+                    found = parsed.find(item => {
+                        const parts = item.normalized.split(' ').filter(Boolean);
+                        return wantedParts.every(part => parts.includes(part)) &&
+                               parts.every(part => wantedParts.includes(part));
+                    });
                 }
 
-                Utils.log(`=== RÉSULTAT: ${pendingCount} emails en attente ===`);
-                return pendingCount;
+                if (!found) {
+                    Utils.log('Compteur email utilisateur introuvable. Candidats:', parsed);
+                    return 0;
+                }
 
+                Utils.log(`✓ ${found.name} : ${found.count} emails actuellement affectés`);
+                return found.count;
             } catch (error) {
                 Utils.log('Erreur collecte emails en attente:', error);
                 return 0;
@@ -1435,142 +1404,201 @@
     // ============================================
     // COLLECTEUR DE TÂCHES TERMINÉES
     // ============================================
+    const TaskListUtils = {
+        baseUrl: 'https://courtage.modulr.fr/fr/scripts/Tasks/TasksList.php',
+
+        taskId(row) {
+            const direct = row?.getAttribute?.('data-task-id');
+            if (direct && /^\d+$/.test(direct)) return direct;
+            const id = row?.id || '';
+            const match = id.match(/^task[:_-](\d+)$/i);
+            return match ? match[1] : null;
+        },
+
+        rows(doc) {
+            return Array.from(doc.querySelectorAll('tr')).filter(row => this.taskId(row));
+        },
+
+        dueDate(row) {
+            const cells = Array.from(row.querySelectorAll('td.align_center, td'));
+            for (const cell of cells) {
+                const text = (cell.textContent || '').replace(/\s+/g, ' ').trim();
+                const match = text.match(/\b(\d{2}\/\d{2}\/\d{4})(?:\s+(?:à\s*)?(\d{1,2}:\d{2}))?/);
+                if (match) return match[1] + (match[2] ? ` à ${match[2]}` : '');
+            }
+            return '';
+        },
+
+        audit(row) {
+            const hidden = row.querySelector('.hidden');
+            const raw = hidden ? ((hidden.textContent || '') + ' ' + (hidden.innerHTML || '')) : '';
+            const normalized = raw.replace(/<[^>]+>/g, ' ').replace(/&nbsp;/gi, ' ').replace(/\s+/g, ' ').trim();
+
+            let lastModifiedDate = '';
+            let lastModifiedTime = '';
+            let lastModifiedBy = '';
+            const mod = normalized.match(/Derni[èe]re modification\s*:?\s*(.*?)\s+(\d{2}\/\d{2}\/\d{4})(?:\s+(\d{1,2}:\d{2})(?::\d{2})?)?/i);
+            if (mod) {
+                lastModifiedBy = (mod[1] || '').trim();
+                lastModifiedDate = mod[2] || '';
+                lastModifiedTime = mod[3] || '';
+            }
+
+            let createdDate = '';
+            let createdBy = '';
+            const creation = normalized.match(/Cr[ée]ation\s*:?\s*(.*?)\s+(\d{2}\/\d{2}\/\d{4})/i);
+            if (creation) {
+                createdBy = (creation[1] || '').trim();
+                createdDate = creation[2] || '';
+            }
+
+            return { lastModifiedDate, lastModifiedTime, lastModifiedBy, createdDate, createdBy };
+        },
+
+        isOverdue(row, dueDate) {
+            const byStyle = row.classList.contains('task_late_background_color') ||
+                !!row.querySelector('.task_late_icon, .task_late_divider, .fa-exclamation-triangle, [class*="late"], [class*="overdue"]');
+            return byStyle || TasksOverdueCollector.calculateDaysOverdue(dueDate) > 0;
+        },
+
+        nextPageUrl(doc, currentUrl, visited) {
+            const links = Array.from(doc.querySelectorAll('a[href]'));
+            const direct = links.find(a => {
+                const hint = [
+                    a.getAttribute('rel') || '',
+                    a.getAttribute('title') || '',
+                    a.getAttribute('aria-label') || '',
+                    a.textContent || ''
+                ].join(' ').replace(/\s+/g, ' ').trim();
+                return /(^|\s)(next|suivant|page suivante)(\s|$)|^[›»>]$/i.test(hint);
+            });
+
+            const normalize = href => {
+                try { return new URL(href, currentUrl).href; } catch (_) { return null; }
+            };
+
+            if (direct) {
+                const url = normalize(direct.getAttribute('href'));
+                if (url && !visited.has(url)) return url;
+            }
+
+            // Fallback : Modulr change parfois le nom du paramètre de pagination.
+            // On détecte donc tout paramètre contenant "page".
+            const numeric = [];
+            for (const a of links) {
+                const url = normalize(a.getAttribute('href'));
+                if (!url || visited.has(url)) continue;
+                try {
+                    const parsed = new URL(url);
+                    if (!/TasksList\.php/i.test(parsed.pathname)) continue;
+                    for (const [key, value] of parsed.searchParams.entries()) {
+                        if (/page/i.test(key) && /^\d+$/.test(value)) {
+                            numeric.push({ url, page: parseInt(value, 10) });
+                        }
+                    }
+                } catch (_) {}
+            }
+            numeric.sort((a, b) => a.page - b.page);
+            return numeric.length ? numeric[0].url : null;
+        },
+
+        async fetchAll(params, updateLoader, label) {
+            let currentUrl = `${this.baseUrl}?${params.toString()}`;
+            const visited = new Set();
+            const pages = [];
+
+            for (let page = 1; page <= 30 && currentUrl && !visited.has(currentUrl); page++) {
+                visited.add(currentUrl);
+                if (typeof updateLoader === 'function') updateLoader(`${label} - page ${page}...`);
+                const html = await Utils.fetchPage(currentUrl);
+                const doc = Utils.parseHTML(html);
+                const rows = this.rows(doc);
+                pages.push({ url: currentUrl, html, doc, rows, allRows: Array.from(doc.querySelectorAll('tr')) });
+
+                const next = this.nextPageUrl(doc, currentUrl, visited);
+                if (!next || rows.length === 0) break;
+                currentUrl = next;
+                await Utils.delay(120);
+            }
+
+            return pages;
+        },
+
+        contentNearRow(page, row) {
+            const rowIndex = page.allRows.indexOf(row);
+            if (rowIndex >= 0 && rowIndex < page.allRows.length - 1) {
+                const nextRow = page.allRows[rowIndex + 1];
+                if (!this.taskId(nextRow)) {
+                    const contentCell = nextRow.querySelector('td[colspan] p, td[colspan] div, td[colspan]');
+                    if (contentCell) return Utils.cleanRichText(contentCell.innerHTML || contentCell.textContent || '');
+                }
+            }
+            return '';
+        }
+    };
+
+    // ============================================
+    // COLLECTEUR DE TÂCHES TERMINÉES
+    // ============================================
     const TasksCompletedCollector = {
         async collect(userId, connectedUser, updateLoader) {
             Utils.log('Collecte des tâches terminées par', connectedUser);
             const results = [];
-            const today = Utils.getTodayDate();
+            const reportDate = Utils.getTodayDate();
+            const seen = new Set();
 
             try {
-                updateLoader('Tâches terminées...');
-
-                const baseUrl = 'https://courtage.modulr.fr/fr/scripts/Tasks/TasksList.php';
                 const params = new URLSearchParams({
                     'tasks_filters[task_recipient]': userId.taskValue,
                     'tasks_filters[task_status]': 'finished'
                 });
+                const pages = await TaskListUtils.fetchAll(params, updateLoader, 'Tâches terminées');
 
-                const url = `${baseUrl}?${params.toString()}#entity_menu_task=0`;
-                Utils.log('URL tâches terminées:', url);
+                for (const page of pages) {
+                    for (const row of page.rows) {
+                        const taskId = TaskListUtils.taskId(row);
+                        if (!taskId || seen.has(taskId)) continue;
 
-                const html = await Utils.fetchPage(url);
-                const doc = Utils.parseHTML(html);
+                        const audit = TaskListUtils.audit(row);
+                        const fallbackDate = TaskListUtils.dueDate(row).match(/\d{2}\/\d{2}\/\d{4}/)?.[0] || '';
+                        const completedDate = audit.lastModifiedDate || fallbackDate;
 
-                // Récupérer toutes les lignes du tableau
-                const allRows = Array.from(doc.querySelectorAll('tr'));
-                const taskRows = allRows.filter(row => row.id && row.id.startsWith('task:'));
-                Utils.log(`${taskRows.length} tâches trouvées`);
-
-                let taskCount = 0;
-
-                for (let i = 0; i < taskRows.length; i++) {
-                    const row = taskRows[i];
-                    const dateCell = row.querySelector('td.align_center');
-                    const dateSpan = dateCell ? dateCell.querySelector('span:last-child') : null;
-                    const completedDate = dateSpan ? dateSpan.textContent.trim() : '';
-
-                    Utils.log(`Tâche date: ${completedDate}, today: ${today}`);
-
-                    // Vérifier si terminée aujourd'hui
-                    if (completedDate.includes(today)) {
-                        taskCount++;
-                        const taskId = row.id.replace('task:', '');
-
-                        updateLoader(`Lecture tâche ${taskCount}...`);
+                        // Une tâche "finished" doit être rattachée au jour où elle a été
+                        // clôturée/modifiée, pas à sa date d'échéance.
+                        if (completedDate !== reportDate) continue;
+                        seen.add(taskId);
 
                         const titleSpan = row.querySelector('span.font_size_higher');
                         const clientLink = row.querySelector('a[href*="clients_card"]');
+                        let content = TaskListUtils.contentNearRow(page, row);
 
-                        // Chercher le contenu dans la ligne suivante
-                        // La ligne de contenu a la classe task_ended_background_color ou task_bg_color
-                        // et contient td[colspan] avec un <p>
-                        let content = '';
-
-                        // Méthode 1: Chercher la ligne suivante dans le DOM
-                        const rowIndex = allRows.indexOf(row);
-                        if (rowIndex >= 0 && rowIndex < allRows.length - 1) {
-                            const nextRow = allRows[rowIndex + 1];
-                            Utils.log(`Ligne suivante classe: ${nextRow.className}`);
-
-                            // Vérifier si c'est une ligne de contenu (pas une ligne task:)
-                            if (!nextRow.id || !nextRow.id.startsWith('task:')) {
-                                const contentCell = nextRow.querySelector('td[colspan] p');
-                                if (contentCell) {
-                                    content = Utils.cleanRichText(contentCell.innerHTML);
-                                    Utils.log(`Contenu trouvé (${content.length} chars): ${content.substring(0, 80)}...`);
-                                }
-                            }
-                        }
-
-                        // Méthode 2: Si pas trouvé, chercher avec regex dans le HTML brut
                         if (!content) {
-                            const taskIdPattern = new RegExp(`id="task:${taskId}"[\\s\\S]*?<tr[^>]*>\\s*<td[^>]*colspan[^>]*>\\s*<p[^>]*>([\\s\\S]*?)<\\/p>`, 'i');
-                            const match = html.match(taskIdPattern);
-                            if (match) {
-                                content = Utils.cleanRichText(match[1]);
-                                Utils.log(`Contenu trouvé via regex (${content.length} chars)`);
-                            }
-                        }
-
-                        // Méthode 3: Aller chercher sur la page de la tâche
-                        if (!content) {
-                            Utils.log(`Pas de contenu trouvé dans la liste, récupération page tâche ${taskId}`);
+                            if (typeof updateLoader === 'function') updateLoader(`Lecture tâche terminée ${results.length + 1}...`);
                             const taskDetails = await this.getTaskDetails(taskId);
                             content = taskDetails.content || '';
-                            await Utils.delay(CONFIG.DELAY_BETWEEN_REQUESTS);
-                        }
-
-                        // Parser les infos de création et dernière modification
-                        let createdBy = 'N/A', createdDate = 'N/A';
-                        let closedTime = ''; // Heure de clôture = dernière modification
-                        let closedBy = '';
-                        const hiddenDiv = row.querySelector('.hidden');
-                        if (hiddenDiv) {
-                            const text = hiddenDiv.innerHTML;
-                            // Extraction création
-                            const creationMatch = text.match(/Création<\/p>\s*<p[^>]*>([^<]+)/);
-                            if (creationMatch) {
-                                const parts = creationMatch[1].trim().match(/(.+) (\d{2}\/\d{2}\/\d{4})/);
-                                if (parts) {
-                                    createdBy = parts[1].trim();
-                                    createdDate = parts[2];
-                                }
-                            }
-                            // Extraction dernière modification (= heure de clôture)
-                            const modifMatch = text.match(/Derni[èe]re modification<\/p>\s*<p[^>]*>([^<]+)/i);
-                            if (modifMatch) {
-                                // Format: "NOM PRENOM DD/MM/YYYY HH:MM:SS"
-                                const modifParts = modifMatch[1].trim().match(/(.+?)\s+(\d{2}\/\d{2}\/\d{4})\s+(\d{2}:\d{2})/);
-                                if (modifParts) {
-                                    closedBy = modifParts[1].trim();
-                                    closedTime = modifParts[3]; // HH:MM
-                                    Utils.log(`Tâche ${taskId}: Clôturée à ${closedTime} par ${closedBy}`);
-                                }
-                            }
                         }
 
                         results.push({
                             id: taskId,
-                            title: titleSpan ? titleSpan.textContent.trim() : 'N/A',
-                            content: content,
-                            client: clientLink ? clientLink.textContent.trim() : 'Non associé',
+                            title: Utils.cleanRichText(titleSpan?.textContent || 'Tâche'),
+                            content: Utils.cleanRichText(content),
+                            client: Utils.cleanRichText(clientLink?.textContent || 'Non associé'),
                             clientId: clientLink ? (clientLink.href.match(/id=(\d+)/) || [])[1] : null,
                             assignedTo: connectedUser,
-                            completedDate: completedDate,
-                            time: closedTime, // Heure de clôture pour la vue chronologique
-                            closedTime: closedTime,
-                            closedBy: closedBy,
-                            createdBy,
-                            createdDate,
+                            completedDate,
+                            time: audit.lastModifiedTime || '',
+                            closedTime: audit.lastModifiedTime || '',
+                            closedBy: audit.lastModifiedBy || connectedUser,
+                            createdBy: audit.createdBy || '',
+                            createdDate: audit.createdDate || '',
                             isPriority: !!row.querySelector('.fa-exclamation'),
                             hasBookmark: !!row.querySelector('.fa-bookmark')
                         });
-
-                        Utils.log(`Tâche collectée: ${taskId}`);
                     }
                 }
 
-                Utils.log(`Total: ${results.length} tâches terminées`);
+                results.sort((a, b) => String(a.closedTime || '').localeCompare(String(b.closedTime || '')));
+                Utils.log(`Total: ${results.length} tâches clôturées le ${reportDate}`);
             } catch (error) {
                 Utils.log('Erreur collecte tâches terminées:', error);
             }
@@ -1580,45 +1608,24 @@
 
         async getTaskDetails(taskId) {
             try {
-                // L'URL de la popup de tâche
                 const url = `https://courtage.modulr.fr/fr/scripts/Tasks/TasksCard.php?task_id=${taskId}`;
-                Utils.log(`Récupération détails tâche ${taskId}: ${url}`);
-
                 const html = await Utils.fetchPage(url);
-                Utils.log(`HTML tâche reçu (300 chars): ${html.substring(0, 300)}`);
+                const doc = Utils.parseHTML(html);
+
+                const candidates = [
+                    doc.querySelector('td[colspan] p'),
+                    doc.querySelector('textarea'),
+                    doc.querySelector('[name="content"]'),
+                    doc.querySelector('[name="description"]')
+                ].filter(Boolean);
 
                 let content = '';
-
-                // Méthode 1: Chercher dans td[colspan] p (structure de la popup)
-                // <tr><td colspan="4"><p class="medium_padding_left medium_padding_right">CONTENU</p></td></tr>
-                const regexContent = /<td\s+colspan[^>]*>\s*<p[^>]*>([\s\S]*?)<\/p>\s*<\/td>/i;
-                const match = html.match(regexContent);
-                if (match) {
-                    content = Utils.cleanRichText(match[1]);
-                    Utils.log(`Contenu tâche trouvé via regex (${content.length} chars): ${content.substring(0, 80)}...`);
+                for (const el of candidates) {
+                    const value = 'value' in el ? el.value : (el.innerHTML || el.textContent || '');
+                    const cleaned = Utils.cleanRichText(value);
+                    if (cleaned && cleaned.length > content.length) content = cleaned;
                 }
-
-                // Méthode 2: Parser le DOM
-                if (!content) {
-                    const doc = Utils.parseHTML(html);
-
-                    // Chercher td[colspan] p
-                    const contentCell = doc.querySelector('td[colspan] p');
-                    if (contentCell) {
-                        content = Utils.cleanRichText(contentCell.innerHTML);
-                        Utils.log(`Contenu tâche trouvé via DOM: ${content.substring(0, 80)}...`);
-                    }
-
-                    // Fallback: textarea
-                    if (!content) {
-                        const textarea = doc.querySelector('textarea');
-                        if (textarea && textarea.value) {
-                            content = Utils.cleanRichText(textarea.value);
-                        }
-                    }
-                }
-
-                return { content: content };
+                return { content };
             } catch (error) {
                 Utils.log('Erreur lecture tâche:', error);
                 return { content: '' };
@@ -1630,45 +1637,49 @@
     // COLLECTEUR DES TÂCHES ACTUELLEMENT À TRAITER
     // ============================================
     const PendingTasksCollector = {
-        collect: async function collectPendingTasks(userId, connectedUser, updateLoader) {
-    const results = [];
-    try {
-        if (updateLoader) updateLoader('Comptage des tâches actuellement à traiter...');
-        const baseUrl = 'https://courtage.modulr.fr/fr/scripts/Tasks/TasksList.php';
-        const params = new URLSearchParams({
-            'tasks_filters[task_recipient]': userId.taskValue,
-            'tasks_filters[task_status]': ''
-        });
-        const html = await Utils.fetchPage(`${baseUrl}?${params.toString()}`);
-        const doc = Utils.parseHTML(html);
-        const rows = Array.from(doc.querySelectorAll('tr[id^="task:"]'));
+        async collect(userId, connectedUser, updateLoader) {
+            const results = [];
+            const seen = new Set();
 
-        for (const row of rows) {
-            const taskId = row.id.replace('task:', '');
-            const title = row.querySelector('span.font_size_higher')?.textContent?.trim() || 'Tâche';
-            const clientLink = row.querySelector('a[href*="clients_card"]');
-            const dateCell = row.querySelector('td.align_center');
-            const dueDate = dateCell?.querySelector('span:last-child')?.textContent?.trim() || '';
-            const daysOverdue = TasksOverdueCollector.calculateDaysOverdue(dueDate);
+            try {
+                const params = new URLSearchParams({
+                    'tasks_filters[task_recipient]': userId.taskValue,
+                    'tasks_filters[task_status]': ''
+                });
+                const pages = await TaskListUtils.fetchAll(params, updateLoader, 'Tâches à traiter');
 
-            results.push({
-                id: taskId,
-                title,
-                client: clientLink ? clientLink.textContent.trim() : 'Non associé',
-                clientId: clientLink ? (clientLink.href.match(/id=(\d+)/) || [])[1] : null,
-                assignedTo: connectedUser,
-                dueDate,
-                daysOverdue,
-                isOverdue: daysOverdue > 0
-            });
+                for (const page of pages) {
+                    for (const row of page.rows) {
+                        const taskId = TaskListUtils.taskId(row);
+                        if (!taskId || seen.has(taskId)) continue;
+                        seen.add(taskId);
+
+                        const title = Utils.cleanRichText(row.querySelector('span.font_size_higher')?.textContent || 'Tâche');
+                        const clientLink = row.querySelector('a[href*="clients_card"]');
+                        const dueDate = TaskListUtils.dueDate(row);
+                        const daysOverdue = TasksOverdueCollector.calculateDaysOverdue(dueDate);
+                        const isOverdue = TaskListUtils.isOverdue(row, dueDate);
+
+                        results.push({
+                            id: taskId,
+                            title,
+                            content: TaskListUtils.contentNearRow(page, row),
+                            client: Utils.cleanRichText(clientLink?.textContent || 'Non associé'),
+                            clientId: clientLink ? (clientLink.href.match(/id=(\d+)/) || [])[1] : null,
+                            assignedTo: connectedUser,
+                            dueDate,
+                            daysOverdue,
+                            isOverdue
+                        });
+                    }
+                }
+
+                Utils.log(`${results.length} tâches actuellement à traiter trouvées sur ${pages.length} page(s)`);
+            } catch (error) {
+                Utils.log('Erreur comptage tâches à traiter:', error);
+            }
+            return results;
         }
-
-        Utils.log(`${results.length} tâches actuellement à traiter trouvées`);
-    } catch (error) {
-        Utils.log('Erreur comptage tâches à traiter:', error);
-    }
-    return results;
-}
     };
 
     // ============================================
@@ -5350,9 +5361,12 @@
             await Utils.delay(CONFIG.DELAY_BETWEEN_REQUESTS);
 
             // Étape 5: Tâches en retard
-            loader.update(5, 48, 'Collecte des tâches en retard...');
-            const tasksOverdue = await TasksOverdueCollector.collect(userId, connectedUser, loader.updateStatus);
-            await Utils.delay(CONFIG.DELAY_BETWEEN_REQUESTS);
+            // On dérive ce compteur de la liste exhaustive des tâches ouvertes afin
+            // d'éviter deux collectes différentes qui donnaient des totaux incohérents.
+            loader.update(5, 48, 'Classement des tâches en retard...');
+            const tasksOverdue = pendingTasks
+                .filter(task => task.isOverdue)
+                .sort((a, b) => (b.daysOverdue || 0) - (a.daysOverdue || 0));
 
             // Étape 6: Devis
             loader.update(6, 58, 'Collecte des devis...');
