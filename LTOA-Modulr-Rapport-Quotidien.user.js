@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         LTOA Modulr - Rapport Quotidien
 // @namespace    https://github.com/BiggerThanTheMall/tampermonkey-ltoa
-// @version      5.6.7
+// @version      5.6.8
 // @description  Génération automatique du rapport d’activité quotidien dans Modulr
 // @author       LTOA Assurances
 // @match        https://courtage.modulr.fr/*
@@ -1102,27 +1102,38 @@
                         let affectedDate = '';
                         let affectedBy = '';
 
+                        // Un même mail peut avoir plusieurs historiques d'affectation.
+                        // Il faut donc parcourir TOUTES les traces et non s'arrêter à la première.
+                        const connectedUserKey = Utils.resolveUserKey(connectedUser);
+                        if (!connectedUserKey) continue;
+
+                        const affectationEvents = [];
                         const hiddenSpans = row.querySelectorAll('span.hidden');
                         for (const span of hiddenSpans) {
-                            const txt = span.textContent.trim();
-                            const match = txt.match(/Affecté\s+à\s+(.+?)\s+par\s+(.+?)\s+le\s+(\d{2}\/\d{2}\/\d{4})/i);
-                            if (match) {
-                                affectedTo = match[1].trim();
-                                affectedBy = match[2].trim();
-                                affectedDate = match[3];
-                                break;
+                            const txt = (span.textContent || '').replace(/\s+/g, ' ').trim();
+                            const regex = /Affecté\s+à\s+(.+?)\s+par\s+(.+?)\s+le\s+(\d{2}\/\d{2}\/\d{4})/gi;
+                            let match;
+                            while ((match = regex.exec(txt)) !== null) {
+                                affectationEvents.push({
+                                    to: match[1].trim(),
+                                    by: match[2].trim(),
+                                    date: match[3]
+                                });
                             }
                         }
 
-                        if (!affectedBy) continue;
-                        if (affectedDate !== reportDate) continue;
+                        // On compte ce mail si AU MOINS UNE affectation à une fiche
+                        // a été effectuée par le collaborateur le jour du rapport.
+                        const matchingEvent = affectationEvents.find(event =>
+                            event.date === reportDate &&
+                            Utils.resolveUserKey(event.by) === connectedUserKey
+                        );
 
-                        // Filtre par utilisateur : même résolution que pour le collaborateur connecté.
-                        const affectedUserKey = Utils.resolveUserKey(affectedBy);
-                        const connectedUserKey = Utils.resolveUserKey(connectedUser);
-                        const isMatch = !!affectedUserKey && !!connectedUserKey && affectedUserKey === connectedUserKey;
+                        if (!matchingEvent) continue;
 
-                        if (!isMatch) continue;
+                        affectedTo = matchingEvent.to;
+                        affectedBy = matchingEvent.by;
+                        affectedDate = matchingEvent.date;
 
                         const dateTimeSpan = row.querySelector('span[id^="e_datetime_"]');
                         let emailTime = '';
@@ -2919,7 +2930,7 @@
                 ...emailsAffected.map(email => `
                     <tr data-kind="affected">
                         <td class="ltoa-time">${Utils.escapeHtml(email.time || email.date || '')}</td>
-                        <td><span class="ltoa-tag ltoa-update">Affecté / traité</span></td>
+                        <td><span class="ltoa-tag ltoa-update">Classé</span></td>
                         <td class="ltoa-client">${Utils.escapeHtml(email.clientName || email.fromEmail || email.from || '—')}</td>
                         <td class="ltoa-ref">Email n° ${Utils.escapeHtml(email.id || '—')}</td>
                         <td>${Utils.escapeHtml(email.subject || 'Sans objet')}</td>
@@ -3015,8 +3026,9 @@
             `).join('');
         
             const emailSummary = `
-                <button type="button" class="ltoa-metric-btn" data-section="emails" data-kind="sent" data-detail-title="Emails · ${emailsSent.length} envoyés"><b>${emailsSent.length}</b> envoyés</button>
-                <button type="button" class="ltoa-metric-btn" data-section="emails" data-kind="affected" data-detail-title="Emails · ${emailsAffected.length} affectés / traités"><b>${emailsAffected.length}</b> affectés / traités</button>`;
+                <button type="button" class="ltoa-metric-btn" data-section="emails" data-kind="sent" data-detail-title="Emails · ${emailsSent.length} envoyés aujourd’hui"><b>${emailsSent.length}</b> envoyés aujourd’hui</button>
+                <button type="button" class="ltoa-metric-btn" data-section="emails" data-kind="affected" data-detail-title="Emails · ${emailsAffected.length} classés aujourd’hui"><b>${emailsAffected.length}</b> classés aujourd’hui</button>
+                <span class="ltoa-metric-btn" style="cursor:default"><b>${pendingEmailsCount || 0}</b> à traiter</span>`;
         
             const callInbound = aircallCalls.filter(call => call.type === 'entrant').length;
             const callOutbound = aircallCalls.filter(call => call.type === 'sortant').length;
@@ -3621,7 +3633,7 @@
                     <div class="ltoa-client-body">
                         ${clientLink ? `<a class="ltoa-client-link" href="${clientLink}" target="_blank" rel="noopener">Ouvrir la fiche client dans Modulr ↗</a>` : ''}
                         ${renderGroup('Emails envoyés', client.emailsSent.length, sent)}
-                        ${renderGroup('Emails reçus / affectés', client.emailsAffected.length, received)}
+                        ${renderGroup('Emails classés', client.emailsAffected.length, received)}
                         ${renderGroup('Appels', client.aircallCalls.length, calls)}
                         ${renderGroup('Tâches terminées', client.tasksCompleted.length, completedTasks)}
                         ${renderGroup('Tâches en retard', client.tasksOverdue.length, overdueTasks)}
@@ -3774,7 +3786,7 @@
 
         emailsAffected.forEach(item => push({
             category: 'emails',
-            label: 'Email reçu / affecté',
+            label: 'Email classé',
             time: extractTime(item.time, item.date),
             title: item.subject || 'Sans objet',
             client: item.clientName || item.fromName || item.from || item.fromEmail || '',
@@ -4135,7 +4147,7 @@ ${clone.outerHTML}
                         type: 'email_affected',
                         icon: '📥',
                         color: '#388e3c',
-                        label: 'Email affecté',
+                        label: 'Email classé',
                         time: time,
                         timeSeconds: parseTime(time),
                         title: e.subject || 'Sans objet',
@@ -4785,14 +4797,16 @@ ${clone.outerHTML}
             const emailsSent = await EmailsSentCollector.collect(connectedUser, loader.updateStatus);
             await Utils.delay(CONFIG.DELAY_BETWEEN_REQUESTS);
 
-            // Étape 2: Emails affectés
-            loader.update(2, 10, 'Collecte des emails affectés...');
-            const emailsAffected = await EmailsAffectedCollector.collect(connectedUser, loader.updateStatus);
+            // Étape 2: Stock actuel d'emails à traiter.
+            // On le lit AVANT d'activer l'affichage des emails traités afin de rester
+            // sur l'état normal de la boîte de réception.
+            loader.update(2, 10, 'Comptage emails à traiter...');
+            const pendingEmailsCount = await PendingEmailsCollector.collect(connectedUser, loader.updateStatus);
             await Utils.delay(CONFIG.DELAY_BETWEEN_REQUESTS);
 
-            // Étape 2b: Nombre d'emails en attente
-            loader.update(2, 15, 'Comptage emails en attente...');
-            const pendingEmailsCount = await PendingEmailsCollector.collect(connectedUser, loader.updateStatus);
+            // Étape 2b: Emails classés/rattachés à une fiche aujourd'hui.
+            loader.update(2, 15, 'Collecte des emails classés...');
+            const emailsAffected = await EmailsAffectedCollector.collect(connectedUser, loader.updateStatus);
             await Utils.delay(CONFIG.DELAY_BETWEEN_REQUESTS);
 
             // Charge actuelle : toutes les tâches ouvertes affectées au collaborateur
