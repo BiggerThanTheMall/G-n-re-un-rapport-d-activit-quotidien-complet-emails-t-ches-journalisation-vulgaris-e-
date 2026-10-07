@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         LTOA Modulr - Rapport Quotidien
 // @namespace    https://github.com/BiggerThanTheMall/tampermonkey-ltoa
-// @version      5.6.6
+// @version      5.6.7
 // @description  Génération automatique du rapport d’activité quotidien dans Modulr
 // @author       LTOA Assurances
 // @match        https://courtage.modulr.fr/*
@@ -595,51 +595,88 @@
                 .trim();
         },
 
+        normalizeUserName: (value) => {
+            return String(value || '')
+                .normalize('NFD').replace(/[\u0300-\u036f]/g, '')
+                .toLowerCase()
+                .replace(/[-_.,'’]/g, ' ')
+                .replace(/\s+/g, ' ')
+                .trim();
+        },
+
+        resolveUserKey: (value) => {
+            const wanted = Utils.normalizeUserName(value);
+            if (!wanted) return null;
+
+            const entries = Object.keys(USER_MAP).map(key => ({
+                key,
+                normalized: Utils.normalizeUserName(key)
+            }));
+
+            // Priorité absolue au nom complet normalisé.
+            let found = entries.find(entry => entry.normalized === wanted);
+            if (found) return found.key;
+
+            // Tolérance aux libellés Modulr qui ajoutent/enlèvent ponctuation ou texte.
+            found = entries.find(entry =>
+                wanted.includes(entry.normalized) || entry.normalized.includes(wanted)
+            );
+            if (found) return found.key;
+
+            // Dernier fallback uniquement si prénom ET nom correspondent,
+            // quel que soit leur ordre. Jamais sur une seule partie du nom.
+            const wantedParts = new Set(wanted.split(' ').filter(part => part.length > 1));
+            found = entries.find(entry => {
+                const parts = entry.normalized.split(' ').filter(part => part.length > 1);
+                return parts.length >= 2 && parts.every(part => wantedParts.has(part));
+            });
+
+            return found?.key || null;
+        },
+
         getConnectedUser: () => {
             const users = Object.keys(USER_MAP);
 
-            // MÉTHODE PRINCIPALE: div.connectedUser contient le span.tooltip avec le nom
+            const candidates = [];
+
+            // MÉTHODE PRINCIPALE
             const connectedUserDiv = document.querySelector('.connectedUser span.tooltip');
             if (connectedUserDiv) {
-                const title = connectedUserDiv.getAttribute('title') || '';
-                const text = connectedUserDiv.textContent.trim();
-                const nameToCheck = title || text;
-
-                for (const user of users) {
-                    if (nameToCheck.toLowerCase().includes(user.toLowerCase()) ||
-                        user.toLowerCase().includes(nameToCheck.toLowerCase())) {
-                        Utils.log('Utilisateur détecté (.connectedUser):', user);
-                        return user;
-                    }
-                }
+                candidates.push(
+                    connectedUserDiv.getAttribute('title') || '',
+                    connectedUserDiv.textContent || ''
+                );
             }
 
-            // FALLBACK 1: span.tooltip avec fa-user
+            // FALLBACK DOM
             const userSpan = document.querySelector('span.tooltip span.fa-user');
             if (userSpan && userSpan.parentElement) {
-                const parentText = userSpan.parentElement.textContent.trim();
-                const oldTitle = userSpan.parentElement.getAttribute('oldtitle') || '';
+                candidates.push(
+                    userSpan.parentElement.getAttribute('oldtitle') || '',
+                    userSpan.parentElement.getAttribute('title') || '',
+                    userSpan.parentElement.textContent || ''
+                );
+            }
 
-                for (const user of users) {
-                    if (oldTitle.toLowerCase().includes(user.toLowerCase()) ||
-                        parentText.toLowerCase().includes(user.toLowerCase())) {
-                        Utils.log('Utilisateur détecté (fa-user):', user);
-                        return user;
-                    }
+            for (const candidate of candidates) {
+                const resolved = Utils.resolveUserKey(candidate);
+                if (resolved) {
+                    Utils.log('Utilisateur détecté:', resolved);
+                    return resolved;
                 }
             }
 
-            // DERNIER RECOURS: Demander
+            // Dernier recours manuel, avec la même résolution robuste.
             Utils.log('Utilisateur non détecté, demande manuelle');
-            const userList = users.filter((u, i, arr) => arr.findIndex(x => x.toLowerCase() === u.toLowerCase()) === i).join('\n');
-            const choice = prompt(`Utilisateur non détecté.\n\nQui êtes-vous ?\n${userList}`);
+            const uniqueUsers = users.filter((u, i, arr) =>
+                arr.findIndex(x => Utils.normalizeUserName(x) === Utils.normalizeUserName(u)) === i
+            );
+            const choice = prompt(`Utilisateur non détecté.\n\nQui êtes-vous ?\n${uniqueUsers.join('\n')}`);
             if (choice) {
-                for (const user of users) {
-                    if (user.toLowerCase().includes(choice.toLowerCase()) ||
-                        choice.toLowerCase().includes(user.split(' ')[0].toLowerCase())) {
-                        Utils.log('Utilisateur choisi:', user);
-                        return user;
-                    }
+                const resolved = Utils.resolveUserKey(choice);
+                if (resolved) {
+                    Utils.log('Utilisateur choisi:', resolved);
+                    return resolved;
                 }
             }
 
@@ -647,10 +684,11 @@
         },
 
         getUserData: (name) => {
-            const normalizedName = Object.keys(USER_MAP).find(key =>
-                key.toLowerCase() === name.toLowerCase()
-            );
-            return USER_MAP[normalizedName] || USER_MAP['Ghais Kalah'];
+            const userKey = Utils.resolveUserKey(name);
+            if (!userKey || !USER_MAP[userKey]) {
+                throw new Error(`Collaborateur Modulr non reconnu : "${name}". Aucun rapport n'a été généré pour éviter d'utiliser les données d'un autre utilisateur.`);
+            }
+            return USER_MAP[userKey];
         },
 
         delay: (ms) => new Promise(resolve => setTimeout(resolve, ms)),
@@ -1079,27 +1117,10 @@
                         if (!affectedBy) continue;
                         if (affectedDate !== reportDate) continue;
 
-                        // Filtre par utilisateur
-                        const userLower = connectedUser.toLowerCase().trim();
-                        const byLower = affectedBy.toLowerCase().trim();
-
-                        let isMatch = (byLower === userLower);
-                        if (!isMatch) isMatch = byLower.includes(userLower) || userLower.includes(byLower);
-                        if (!isMatch) {
-    const byParts = byLower.split(/[\s,]+/).filter(p => p.length > 2);
-    const userParts = userLower.split(/[\s,]+/).filter(p => p.length > 2);
-
-    // Exiger que le PRÉNOM corresponde (pas juste le nom de famille)
-    if (byParts.length > 0 && userParts.length > 0) {
-        const byFirstName = byParts[0];
-        const userFirstName = userParts[0];
-        if (byFirstName === userFirstName ||
-            byFirstName.includes(userFirstName) ||
-            userFirstName.includes(byFirstName)) {
-            isMatch = true;
-        }
-    }
-}
+                        // Filtre par utilisateur : même résolution que pour le collaborateur connecté.
+                        const affectedUserKey = Utils.resolveUserKey(affectedBy);
+                        const connectedUserKey = Utils.resolveUserKey(connectedUser);
+                        const isMatch = !!affectedUserKey && !!connectedUserKey && affectedUserKey === connectedUserKey;
 
                         if (!isMatch) continue;
 
@@ -1153,9 +1174,7 @@
     // depuis la liste des utilisateurs dans le menu d'affectation
     const PendingEmailsCollector = {
         normalizeName(value) {
-            return String(value || '')
-                .normalize('NFD').replace(/[\u0300-\u036f]/g, '')
-                .toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
+            return Utils.normalizeUserName(value);
         },
 
         async collect(connectedUser, updateLoader) {
@@ -1165,59 +1184,45 @@
             try {
                 if (typeof updateLoader === 'function') updateLoader('Récupération emails en attente...');
 
-                const url = 'https://courtage.modulr.fr/fr/scripts/emails/emails_list.php?email_page=1';
-                const html = await Utils.fetchPage(url);
-                const doc = Utils.parseHTML(html);
-                const wanted = this.normalizeName(connectedUser);
-                const wantedParts = wanted.split(' ').filter(Boolean);
-
-                // Le menu d'affectation contient le compteur de référence de Modulr.
-                // On cherche d'abord un nom COMPLET afin d'éviter de confondre Eddy,
-                // Nadia, Doryan ou Ghaïs simplement parce qu'ils partagent "Kalah".
-                const candidates = Array.from(doc.querySelectorAll('a, button, li, span'))
-                    .map(el => ({
-                        el,
-                        text: (el.textContent || '').replace(/\s+/g, ' ').trim()
-                    }))
-                    .filter(item => /\(\s*\d+\s*\)\s*$/.test(item.text));
-
-                const parsed = [];
-                for (const item of candidates) {
-                    const match = item.text.match(/^(.+?)\s*\(\s*(\d+)\s*\)\s*$/);
-                    if (!match) continue;
-                    parsed.push({
-                        name: match[1].trim(),
-                        normalized: this.normalizeName(match[1]),
-                        count: parseInt(match[2], 10) || 0
-                    });
-                }
-
-                let found = parsed.find(item => item.normalized === wanted);
-
-                // Fallback tolérant aux variantes d'affichage, mais il faut que TOUS
-                // les éléments du nom correspondent. Jamais de match sur le seul nom de famille.
-                if (!found && wantedParts.length) {
-                    found = parsed.find(item => {
-                        const parts = item.normalized.split(' ').filter(Boolean);
-                        return wantedParts.every(part => parts.includes(part)) &&
-                               parts.every(part => wantedParts.includes(part));
-                    });
-                }
-
-                if (!found) {
-                    Utils.log('Compteur email utilisateur introuvable. Candidats:', parsed);
+                const connectedUserKey = Utils.resolveUserKey(connectedUser);
+                if (!connectedUserKey) {
+                    Utils.log('Utilisateur non reconnu pour le compteur emails:', connectedUser);
                     return 0;
                 }
 
-                Utils.log(`✓ ${found.name} : ${found.count} emails actuellement affectés`);
-                return found.count;
+                const url = 'https://courtage.modulr.fr/fr/scripts/emails/emails_list.php?email_page=1';
+                const html = await Utils.fetchPage(url);
+                const doc = Utils.parseHTML(html);
+
+                // Priorité aux vrais liens d'affectation Modulr, comme dans la version
+                // qui fonctionnait avant la refonte. Fallback élargi si le markup varie.
+                let candidates = Array.from(doc.querySelectorAll('a[href*="emails/assign"]'));
+                if (!candidates.length) {
+                    candidates = Array.from(doc.querySelectorAll('a, button, li, span'))
+                        .filter(el => /\(\s*\d+\s*\)\s*$/.test((el.textContent || '').trim()));
+                }
+
+                for (const el of candidates) {
+                    const text = (el.textContent || '').replace(/\s+/g, ' ').trim();
+                    const match = text.match(/^(.+?)\s*\(\s*(\d+)\s*\)\s*$/);
+                    if (!match) continue;
+
+                    const candidateUserKey = Utils.resolveUserKey(match[1]);
+                    if (candidateUserKey && candidateUserKey === connectedUserKey) {
+                        const count = parseInt(match[2], 10) || 0;
+                        Utils.log(`✓ ${match[1].trim()} : ${count} emails actuellement affectés`);
+                        return count;
+                    }
+                }
+
+                Utils.log('Compteur email utilisateur introuvable pour:', connectedUser);
+                return 0;
             } catch (error) {
                 Utils.log('Erreur collecte emails en attente:', error);
                 return 0;
             }
         }
     };
-
     // ============================================
     // COLLECTEUR D'APPELS AIRCALL
     // ============================================
