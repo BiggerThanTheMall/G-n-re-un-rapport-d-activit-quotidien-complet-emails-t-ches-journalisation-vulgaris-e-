@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         LTOA Modulr - Rapport Quotidien
 // @namespace    https://github.com/BiggerThanTheMall/tampermonkey-ltoa
-// @version      5.6.5
+// @version      5.6.6
 // @description  Génération automatique du rapport d’activité quotidien dans Modulr
 // @author       LTOA Assurances
 // @match        https://courtage.modulr.fr/*
@@ -3037,7 +3037,7 @@
                         .ltoa-work-head{display:flex;justify-content:space-between;align-items:flex-end;gap:20px;margin-bottom:16px}.ltoa-kicker{font-size:11px;color:#98a2b3;text-transform:uppercase;letter-spacing:.09em;margin-bottom:5px}.ltoa-work-head h2,.ltoa-activity-head h2{font-size:23px;margin:0;letter-spacing:-.02em}.ltoa-work-head p,.ltoa-activity-head p{font-size:13px;color:#748091;margin:4px 0 0}.ltoa-work-total{text-align:right}.ltoa-work-total strong{font-size:31px;line-height:1}.ltoa-work-total span{display:block;font-size:10px;color:#7a8695;margin-top:4px}
                         .ltoa-work-grid{display:grid;grid-template-columns:1.45fr .8fr .8fr;gap:10px}.ltoa-work-card{border:1px solid #e7ebf0;background:rgba(255,255,255,.9);border-radius:18px;padding:15px;min-height:126px}.ltoa-work-card.main{border-color:#dbe7ff;background:linear-gradient(180deg,#f8fbff,#fff)}.ltoa-work-card-head{display:flex;justify-content:space-between;gap:12px;align-items:flex-start}.ltoa-work-card-head span{font-size:13px;font-weight:700;color:#344054}.ltoa-work-card-head strong{font-size:28px;line-height:1}.ltoa-work-card p{font-size:11px;color:#7a8695;margin:4px 0 12px}.ltoa-work-statuses{display:flex;flex-wrap:wrap;gap:7px}.ltoa-work-status{display:flex;flex-direction:column;min-width:86px;background:#f7f9fc;border:1px solid #edf0f3;border-radius:12px;padding:8px}.ltoa-work-status b{font-size:15px}.ltoa-work-status small{font-size:10px;color:#748091;margin-top:2px;line-height:1.25}
                         .ltoa-activity-head{margin:4px 0 12px}
-                        .ltoa-section{background:transparent;border:0;border-bottom:1px solid #d9e0e8;border-radius:0;margin:0 0 5px;overflow:hidden;box-shadow:none}
+                        .ltoa-section{background:transparent;border:0;border-top:1px solid #d7dfe8;border-bottom:1px solid #d7dfe8;border-radius:0;margin:8px 0;overflow:hidden;box-shadow:0 1px 0 rgba(15,23,42,.018)}
                         .ltoa-section{--accent:#64748b;--accent-rgb:100,116,139;--accent-soft:#f1f5f9}.ltoa-section-estimates{--accent:#2563eb;--accent-rgb:37,99,235;--accent-soft:#eff6ff}.ltoa-section-policies{--accent:#7c3aed;--accent-rgb:124,58,237;--accent-soft:#f5f3ff}.ltoa-section-emails{--accent:#0891b2;--accent-rgb:8,145,178;--accent-soft:#ecfeff}.ltoa-section-tasks{--accent:#d97706;--accent-rgb:217,119,6;--accent-soft:#fffbeb}.ltoa-section-calls{--accent:#ea580c;--accent-rgb:234,88,12;--accent-soft:#fff7ed}.ltoa-section-claims{--accent:#dc2626;--accent-rgb:220,38,38;--accent-soft:#fef2f2}.ltoa-section-other{--accent:#475569;--accent-rgb:71,85,105;--accent-soft:#f8fafc}
                         .ltoa-section>summary{border-left:0;background:linear-gradient(90deg,rgba(var(--accent-rgb),.11) 0,rgba(var(--accent-rgb),.065) 145px,rgba(var(--accent-rgb),.025) 245px,transparent 360px)}.ltoa-section-name strong{color:var(--accent)}.ltoa-section .ltoa-badge{background:transparent;color:var(--accent);padding:0;font-weight:700}.ltoa-section .ltoa-metric-btn{border-color:#e2e7ec;background:transparent;color:#667085}.ltoa-section .ltoa-metric-btn b{color:var(--accent)}
                         .ltoa-estimate-status.is-current{background:#eff6ff;border-color:#bfdbfe}.ltoa-estimate-status.is-current b{color:#1d4ed8}.ltoa-estimate-status.is-pricing{background:#f5f3ff;border-color:#ddd6fe}.ltoa-estimate-status.is-pricing b{color:#7c3aed}.ltoa-estimate-status.is-delivered{background:#ecfeff;border-color:#a5f3fc}.ltoa-estimate-status.is-delivered b{color:#0e7490}.ltoa-estimate-status.is-waiting-docs{background:#fffbeb;border-color:#fde68a}.ltoa-estimate-status.is-waiting-docs b{color:#b45309}.ltoa-estimate-status.is-waiting-approval{background:#fff7ed;border-color:#fed7aa}.ltoa-estimate-status.is-waiting-approval b{color:#c2410c}.ltoa-estimate-status.is-deferred{background:#f8fafc;border-color:#cbd5e1}.ltoa-estimate-status.is-deferred b{color:#475569}.ltoa-estimate-status.is-lost{background:#fef2f2;border-color:#fecaca}.ltoa-estimate-status.is-lost b{color:#b91c1c}.ltoa-estimate-status.is-transformed{background:#f0fdf4;border-color:#bbf7d0}.ltoa-estimate-status.is-transformed b{color:#15803d}.ltoa-estimate-status.is-subscription{background:#eef2ff;border-color:#c7d2fe}.ltoa-estimate-status.is-subscription b{color:#4338ca}
@@ -4003,10 +4003,11 @@
                 clone.querySelector('#ltoa-export-html')?.remove();
                 clone.querySelector('#ltoa-close-report')?.remove();
 
-                // Toutes les catégories sont dépliées dans le fichier exporté afin que
-                // les informations restent visibles même sans JavaScript.
+                // Le fichier exporté reprend le même comportement que le rapport :
+                // toutes les sections sont repliées par défaut et restent ouvrables
+                // nativement via <details>/<summary>, sans JavaScript.
                 clone.querySelectorAll('details').forEach(details => {
-                    details.setAttribute('open', '');
+                    details.removeAttribute('open');
                 });
 
                 // Nettoyer les attributs interactifs inutiles.
@@ -4030,7 +4031,6 @@
                     }
                     .ltoa-topbar{position:static!important}
                     .ltoa-main{max-width:1500px!important}
-                    .ltoa-chevron{display:none!important}
                     button[disabled]{cursor:default!important;opacity:1!important}
                     @media print{
                         #ltoa-report-modal{background:#fff!important}
