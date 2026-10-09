@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         LTOA Modulr - Rapport Quotidien
 // @namespace    https://github.com/BiggerThanTheMall/tampermonkey-ltoa
-// @version      5.6.8
+// @version      5.6.9
 // @description  Génération automatique du rapport d’activité quotidien dans Modulr
 // @author       LTOA Assurances
 // @match        https://courtage.modulr.fr/*
@@ -3045,8 +3045,8 @@
                         .ltoa-sidebar{position:sticky;top:0;height:100vh;padding:22px 16px;border-right:1px solid #e7ebf0;background:rgba(255,255,255,.72);backdrop-filter:blur(16px)}
                         .ltoa-brand{display:flex;align-items:center;gap:11px;padding:8px 10px 20px}.ltoa-logo{width:36px;height:36px;border-radius:11px;background:linear-gradient(135deg,#2563eb,#78a8ff);color:#fff;display:grid;place-items:center;font-weight:800;box-shadow:0 10px 22px rgba(37,99,235,.22)}.ltoa-brand strong{font-size:20px}.ltoa-brand small{display:block;color:#7b8795;margin-top:2px}
                         .ltoa-nav{background:rgba(255,255,255,.9);border:1px solid #edf0f4;border-radius:18px;padding:9px;box-shadow:0 12px 30px rgba(15,23,42,.04)}.ltoa-nav-label{font-size:10px;text-transform:uppercase;letter-spacing:.08em;color:#98a2b3;padding:8px 10px}.ltoa-nav-btn{width:100%;border:0;background:transparent;border-radius:12px;padding:10px 11px;text-align:left;cursor:pointer;color:#344054;font-size:12px;margin:2px 0}.ltoa-nav-btn:hover{background:#f5f7fb}.ltoa-nav-btn.active{background:#f7faff;box-shadow:inset 0 0 0 1px #dfe9ff;color:#1d4ed8}
-                        .ltoa-content{min-width:0}.ltoa-topbar{position:sticky;top:0;z-index:5;min-height:74px;background:rgba(248,250,253,.88);backdrop-filter:blur(16px);border-bottom:1px solid rgba(228,231,235,.78);display:flex;align-items:center;justify-content:space-between;padding:13px 24px}
-                        .ltoa-title h1{font-size:29px;margin:0 0 3px;font-weight:760;letter-spacing:-.03em}.ltoa-title span{font-size:13px;color:#7a8695}.ltoa-actions{display:flex;align-items:center;gap:8px}.ltoa-user-pill{border:1px solid #e5e9ef;background:#fff;border-radius:999px;padding:9px 12px;font-size:13px;font-weight:700;color:#344054}.ltoa-btn{border:1px solid #e1e6ec;background:#fff;border-radius:999px;padding:9px 12px;font-size:13px;cursor:pointer;color:#344150}.ltoa-btn:hover{background:#f7f9fb}.ltoa-close{font-size:18px;line-height:1;padding:7px 10px}
+                        .ltoa-content{min-width:0}.ltoa-topbar{position:sticky;top:0;z-index:5;min-height:74px;background:rgba(248,250,253,.88);backdrop-filter:blur(16px);border-bottom:1px solid rgba(228,231,235,.78);display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap;padding:13px 24px}
+                        .ltoa-title{min-width:220px;flex:1 1 auto}.ltoa-title h1{font-size:29px;margin:0 0 3px;font-weight:760;letter-spacing:-.03em}.ltoa-title span{font-size:13px;color:#7a8695}.ltoa-actions{display:flex;align-items:center;justify-content:flex-end;gap:8px;flex-wrap:wrap;flex:0 1 auto}.ltoa-user-pill{border:1px solid #e5e9ef;background:#fff;border-radius:999px;padding:9px 12px;font-size:13px;font-weight:700;color:#344054}.ltoa-btn{border:1px solid #e1e6ec;background:#fff;border-radius:999px;padding:9px 12px;font-size:13px;cursor:pointer;color:#344150}.ltoa-btn:hover{background:#f7f9fb}.ltoa-close{font-size:18px;line-height:1;padding:7px 10px}
                         .ltoa-main{max-width:1500px;margin:0 auto;padding:22px 24px 42px}
                         .ltoa-warning{background:#fff1f1;border:1px solid #f0c7c7;color:#9b2c2c;border-radius:12px;padding:11px 14px;margin-bottom:14px;font-size:12px}
                 .ltoa-report-note{background:linear-gradient(180deg,rgba(255,255,255,.98),rgba(255,255,255,.9));border:1px solid #e4e8ed;border-radius:16px;padding:14px 16px;margin-bottom:14px;box-shadow:0 8px 24px rgba(15,23,42,.025)}.ltoa-report-note strong{display:block;font-size:10px;text-transform:uppercase;letter-spacing:.08em;color:#98a2b3;margin-bottom:6px}.ltoa-report-note div{font-size:13px;line-height:1.55;color:#344054;white-space:pre-wrap}
@@ -3068,7 +3068,7 @@
                         .ltoa-table-wrap{overflow:auto;border:1px solid #e5e9ee;border-radius:6px}.ltoa-table{width:100%;border-collapse:collapse;font-size:13px;background:#fff;min-width:760px}.ltoa-table th{background:#f8f9fb;text-align:left;font-weight:700;color:#687584;padding:11px 12px;border-bottom:1px solid #e7ebef;white-space:nowrap;text-transform:uppercase;font-size:11px;letter-spacing:.035em}.ltoa-table td{padding:12px;border-bottom:1px solid #eef1f3;vertical-align:top}.ltoa-table tr:last-child td{border-bottom:0}.ltoa-time{white-space:nowrap;color:#6d7986}.ltoa-client{font-weight:700}.ltoa-contract-type{font-weight:650;color:#344054}.ltoa-tag{display:inline-block;border-radius:999px;padding:3px 7px;font-size:10px;font-weight:700}.ltoa-creation{background:#eaf7ef;color:#267344}.ltoa-update{background:#eef3ff;color:#315ea8}.ltoa-deletion{background:#fff0ef;color:#ae3b32}
                         .ltoa-row-card{border-bottom:1px solid #edf0f2;padding:11px 0}.ltoa-row-card:first-child{padding-top:0}.ltoa-row-card:last-child{border-bottom:0;padding-bottom:0}.ltoa-row-main{display:flex;gap:8px;align-items:baseline;flex-wrap:wrap}.ltoa-row-main strong{font-size:14px}.ltoa-row-main span{font-size:12px;color:#6e7a87}.ltoa-row-meta{font-size:11px;color:#89939d;margin-top:3px}.ltoa-note-text{margin-top:7px;background:#f7f8fa;border-radius:7px;padding:10px 11px;white-space:pre-wrap;line-height:1.5;font-size:12px;color:#3e4954}.ltoa-empty,.ltoa-muted{font-size:12px;color:#8a949e}
                         .ltoa-detail-backdrop{display:none;position:fixed;inset:0;z-index:2147483647;background:rgba(15,23,42,.28);backdrop-filter:blur(6px);align-items:center;justify-content:center;padding:24px}.ltoa-detail-backdrop.show{display:flex}.ltoa-detail-card{width:min(1080px,96vw);max-height:84vh;overflow:auto;background:#fff;border-radius:10px;padding:18px;box-shadow:0 18px 50px rgba(15,23,42,.16)}.ltoa-detail-head{display:flex;align-items:center;justify-content:space-between;gap:14px;margin-bottom:14px}.ltoa-detail-head h3{margin:0;font-size:18px}.ltoa-detail-close{border:0;background:#f1f4f7;border-radius:999px;width:34px;height:34px;cursor:pointer;font-size:18px}
-                        @media(max-width:1050px){.ltoa-shell{grid-template-columns:1fr}.ltoa-sidebar{display:none}.ltoa-work-grid{grid-template-columns:1fr}.ltoa-breakdown-grid{grid-template-columns:1fr 1fr}.ltoa-main{padding:16px}.ltoa-topbar{padding:12px 16px}.ltoa-section-summary{justify-content:flex-start}.ltoa-section>summary{grid-template-columns:1fr 20px}.ltoa-section-summary{display:none}}
+                        @media(max-width:1050px){.ltoa-shell{grid-template-columns:1fr}.ltoa-sidebar{display:none}.ltoa-work-grid{grid-template-columns:1fr}.ltoa-breakdown-grid{grid-template-columns:1fr 1fr}.ltoa-main{padding:16px}.ltoa-topbar{padding:12px 16px;align-items:flex-start}.ltoa-actions{width:100%;justify-content:flex-start}.ltoa-user-pill{order:-1}.ltoa-section-summary{justify-content:flex-start}.ltoa-section>summary{grid-template-columns:1fr 20px}.ltoa-section-summary{display:none}}
                     </style>
         
                     <div class="ltoa-shell">
@@ -3080,8 +3080,8 @@
                                 </div>
                                 <div class="ltoa-actions">
                                     <span class="ltoa-user-pill">${Utils.escapeHtml(user || '')}</span>
-                                    <button id="ltoa-view-by-client" class="ltoa-btn">Par client</button>
-                                    <button id="ltoa-view-chrono" class="ltoa-btn">Chronologie</button>
+                                    <button type="button" id="ltoa-view-by-client" class="ltoa-btn">Vue par client</button>
+                                    <button type="button" id="ltoa-view-chrono" class="ltoa-btn">Chronologie</button>
                                     <button id="ltoa-export-html" class="ltoa-btn">Exporter</button>
                                     <button id="ltoa-close-report" class="ltoa-btn ltoa-close">×</button>
                                 </div>
@@ -3274,23 +3274,28 @@
                 });
             });
         
-            modal.querySelectorAll('.ltoa-inline-filters').forEach(group => {
-                const sectionEl = group.closest('.ltoa-section');
-                const rows = sectionEl ? Array.from(sectionEl.querySelectorAll('.ltoa-table tbody tr')) : [];
+            // Filtres Devis / Contrats / Sinistres.
+            // Délégation au niveau du rapport pour rester fonctionnelle même si
+            // le contenu d'une section est reconstruit ou réinjecté.
+            modal.addEventListener('click', event => {
+                const button = event.target.closest('.ltoa-inline-filter');
+                if (!button || !modal.contains(button)) return;
 
-                group.querySelectorAll('.ltoa-inline-filter').forEach(button => {
-                    button.addEventListener('click', event => {
-                        event.preventDefault();
-                        event.stopPropagation();
+                event.preventDefault();
+                event.stopPropagation();
 
-                        const kind = button.dataset.filterKind || '';
-                        group.querySelectorAll('.ltoa-inline-filter').forEach(item => item.classList.remove('active'));
-                        button.classList.add('active');
+                const group = button.closest('.ltoa-inline-filters');
+                const sectionEl = button.closest('.ltoa-section');
+                if (!group || !sectionEl) return;
 
-                        rows.forEach(row => {
-                            row.style.display = !kind || row.dataset.kind === kind ? '' : 'none';
-                        });
-                    });
+                const kind = button.dataset.filterKind || '';
+                group.querySelectorAll('.ltoa-inline-filter').forEach(item => item.classList.remove('active'));
+                button.classList.add('active');
+
+                sectionEl.querySelectorAll('.ltoa-table tbody tr').forEach(row => {
+                    const rowKind = row.getAttribute('data-kind') || '';
+                    row.hidden = !!kind && rowKind !== kind;
+                    row.style.display = row.hidden ? 'none' : '';
                 });
             });
         
