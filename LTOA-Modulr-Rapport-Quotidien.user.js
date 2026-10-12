@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         LTOA Modulr - Rapport Quotidien
 // @namespace    https://github.com/BiggerThanTheMall/tampermonkey-ltoa
-// @version      5.7.0
+// @version      5.7.1
 // @description  Génération automatique du rapport d’activité quotidien dans Modulr
 // @author       LTOA Assurances
 // @match        https://courtage.modulr.fr/*
@@ -4272,7 +4272,9 @@ ${chronoHTML}
                 const url = URL.createObjectURL(blob);
                 const link = document.createElement('a');
                 link.href = url;
-                link.download = `Rapport_${String(this.data.user || 'Utilisateur').replace(/\\s+/g, '_')}_${String(this.data.date || '').replace(/\\//g, '-')}.html`;
+                const safeUser = String(this.data.user || 'Utilisateur').trim().replace(/\s+/g, '_');
+                const safeDate = String(this.data.date || '').split('/').join('-');
+                link.download = `Rapport_${safeUser}_${safeDate}.html`;
                 document.body.appendChild(link);
                 link.click();
                 link.remove();
@@ -5380,7 +5382,7 @@ ${chronoHTML}
     // INITIALISATION
     // ============================================
     function init() {
-        Utils.log('Script LTOA Rapport V4 chargé');
+        Utils.log(`Script LTOA Rapport ${typeof GM_info !== 'undefined' && GM_info.script?.version ? 'v' + GM_info.script.version : ''} chargé`);
 
         // Attendre que le DOM soit prêt
         if (document.readyState === 'loading') {
