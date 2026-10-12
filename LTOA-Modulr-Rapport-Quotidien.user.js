@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         LTOA Modulr - Rapport Quotidien
 // @namespace    https://github.com/BiggerThanTheMall/tampermonkey-ltoa
-// @version      5.6.9
+// @version      5.7.0
 // @description  Génération automatique du rapport d’activité quotidien dans Modulr
 // @author       LTOA Assurances
 // @match        https://courtage.modulr.fr/*
@@ -4014,53 +4014,242 @@
                     return;
                 }
 
-                // L'export reprend directement l'interface actuellement affichée.
-                // Cela évite d'avoir un ancien template HTML différent du rapport à l'écran.
-                const clone = source.cloneNode(true);
+                // Le fichier téléchargé est le livrable final du rapport.
+                // Il embarque donc la vue principale + Vue par client + Chronologie,
+                // ainsi que les interactions utiles, sans dépendre de ModulR.
+                const mainClone = source.cloneNode(true);
 
-                // Supprimer les contrôles purement interactifs du rapport.
-                clone.querySelector('#ltoa-detail-backdrop')?.remove();
-                clone.querySelector('#ltoa-view-by-client')?.remove();
-                clone.querySelector('#ltoa-view-chrono')?.remove();
-                clone.querySelector('#ltoa-export-html')?.remove();
-                clone.querySelector('#ltoa-close-report')?.remove();
+                // Générer les deux vues secondaires avec la même donnée déjà collectée,
+                // puis les cloner dans l'export autonome.
+                this.showByClientView();
+                const liveClientView = document.getElementById('ltoa-client-view-modal');
+                const clientClone = liveClientView ? liveClientView.cloneNode(true) : null;
+                liveClientView?.remove();
 
-                // Le fichier exporté reprend le même comportement que le rapport :
-                // toutes les sections sont repliées par défaut et restent ouvrables
-                // nativement via <details>/<summary>, sans JavaScript.
-                clone.querySelectorAll('details').forEach(details => {
+                this.showChronoView();
+                const liveChronoView = document.getElementById('ltoa-chrono-modal');
+                const chronoClone = liveChronoView ? liveChronoView.cloneNode(true) : null;
+                liveChronoView?.remove();
+
+                // Le fichier final n'a plus besoin de se fermer ni de se réexporter.
+                mainClone.querySelector('#ltoa-export-html')?.remove();
+                mainClone.querySelector('#ltoa-close-report')?.remove();
+
+                // Toutes les grandes catégories démarrent repliées, mais restent
+                // ouvrables grâce au comportement natif details/summary.
+                mainClone.querySelectorAll('.ltoa-section').forEach(details => {
                     details.removeAttribute('open');
                 });
 
-                // Nettoyer les attributs interactifs inutiles.
-                clone.querySelectorAll('button').forEach(button => {
-                    if (button.classList.contains('ltoa-inline-filter') ||
-                        button.classList.contains('ltoa-metric-btn') ||
-                        button.classList.contains('ltoa-subtype-btn')) {
-                        button.setAttribute('disabled', '');
-                    }
-                });
+                // Les vues secondaires deviennent des panneaux de la page exportée.
+                if (clientClone) {
+                    clientClone.querySelector('#ltoa-close-client-view')?.setAttribute('data-export-nav', 'main');
+                    const back = clientClone.querySelector('#ltoa-close-client-view');
+                    if (back) back.textContent = 'Retour au rapport';
+                }
+                if (chronoClone) {
+                    chronoClone.querySelector('#ltoa-close-chrono')?.setAttribute('data-export-nav', 'main');
+                    const back = chronoClone.querySelector('#ltoa-close-chrono');
+                    if (back) back.textContent = 'Retour au rapport';
+                }
 
-                const exportOverrides = document.createElement('style');
-                exportOverrides.textContent = `
+                mainClone.querySelector('#ltoa-view-by-client')?.setAttribute('data-export-nav', 'client');
+                mainClone.querySelector('#ltoa-view-chrono')?.setAttribute('data-export-nav', 'chrono');
+
+                const exportOverrides = `
                     html,body{margin:0;padding:0;background:#f5f7fb!important}
-                    #ltoa-report-modal{
+                    body{min-height:100vh}
+                    .ltoa-export-view{display:none}
+                    .ltoa-export-view.is-active{display:block}
+                    #ltoa-report-modal,
+                    #ltoa-client-view-modal,
+                    #ltoa-chrono-modal{
                         position:static!important;
                         inset:auto!important;
+                        width:100%!important;
                         min-height:100vh!important;
+                        height:auto!important;
                         overflow:visible!important;
                         background:#f5f7fb!important;
                     }
-                    .ltoa-topbar{position:static!important}
+                    .ltoa-topbar,.ltoa-secondary-top,.ltoa-chrono-top{position:sticky!important;top:0}
                     .ltoa-main{max-width:1500px!important}
-                    button[disabled]{cursor:default!important;opacity:1!important}
                     @media print{
-                        #ltoa-report-modal{background:#fff!important}
-                        .ltoa-topbar{position:static!important}
+                        .ltoa-export-view{display:none!important}
+                        .ltoa-export-view.is-active{display:block!important}
+                        #ltoa-report-modal,#ltoa-client-view-modal,#ltoa-chrono-modal{background:#fff!important}
+                        .ltoa-topbar,.ltoa-secondary-top,.ltoa-chrono-top{position:static!important}
                         .ltoa-section{break-inside:avoid}
                     }
                 `;
-                clone.prepend(exportOverrides);
+
+                const mainHTML = `<div class="ltoa-export-view is-active" data-export-view="main">${mainClone.outerHTML}</div>`;
+                const clientHTML = clientClone
+                    ? `<div class="ltoa-export-view" data-export-view="client">${clientClone.outerHTML}</div>`
+                    : '';
+                const chronoHTML = chronoClone
+                    ? `<div class="ltoa-export-view" data-export-view="chrono">${chronoClone.outerHTML}</div>`
+                    : '';
+
+                // JavaScript local et autonome : aucune requête vers ModulR.
+                const exportScript = `
+(function(){
+    const root = document;
+
+    function normalize(value){
+        return String(value || '')
+            .normalize('NFD').replace(/[\\u0300-\\u036f]/g,'')
+            .toLowerCase().replace(/[^a-z0-9]+/g,' ').trim();
+    }
+
+    function showView(name){
+        root.querySelectorAll('.ltoa-export-view').forEach(view => {
+            view.classList.toggle('is-active', view.dataset.exportView === name);
+        });
+        window.scrollTo({top:0,behavior:'smooth'});
+    }
+
+    root.addEventListener('click', function(event){
+        const nav = event.target.closest('[data-export-nav]');
+        if(nav){
+            event.preventDefault();
+            showView(nav.dataset.exportNav || 'main');
+            return;
+        }
+
+        // Filtres Tous / Créations / Modifications / Suppressions.
+        const filter = event.target.closest('.ltoa-inline-filter');
+        if(filter){
+            event.preventDefault();
+            event.stopPropagation();
+            const group = filter.closest('.ltoa-inline-filters');
+            const section = filter.closest('.ltoa-section');
+            if(!group || !section) return;
+            const kind = filter.dataset.filterKind || '';
+            group.querySelectorAll('.ltoa-inline-filter').forEach(btn => btn.classList.remove('active'));
+            filter.classList.add('active');
+            section.querySelectorAll('.ltoa-table tbody tr').forEach(row => {
+                const show = !kind || (row.getAttribute('data-kind') || '') === kind;
+                row.hidden = !show;
+                row.style.display = show ? '' : 'none';
+            });
+            return;
+        }
+
+        // Volumes cliquables et détail des modifications.
+        const metric = event.target.closest('.ltoa-metric-btn[data-section], .ltoa-subtype-btn[data-section]');
+        if(metric){
+            event.preventDefault();
+            event.stopPropagation();
+            const main = root.querySelector('[data-export-view="main"]');
+            const section = main?.querySelector('#ltoa-section-' + metric.dataset.section);
+            const backdrop = main?.querySelector('#ltoa-detail-backdrop');
+            const title = main?.querySelector('#ltoa-detail-title');
+            const content = main?.querySelector('#ltoa-detail-content');
+            const sourceTable = section?.querySelector('.ltoa-table');
+            const sourceCalls = section?.querySelector('.ltoa-call-list');
+            if(!backdrop || !title || !content || (!sourceTable && !sourceCalls)) return;
+
+            title.textContent = metric.dataset.detailTitle || 'Détail';
+            content.innerHTML = '';
+
+            const kind = metric.dataset.kind || '';
+            const subtype = metric.dataset.subtype || '';
+
+            if(sourceTable){
+                const clone = sourceTable.cloneNode(true);
+                clone.querySelectorAll('tbody tr').forEach(row => {
+                    const matchesKind = !kind || row.dataset.kind === kind;
+                    const matchesSubtype = !subtype || row.dataset.subtype === subtype;
+                    if(!matchesKind || !matchesSubtype) row.remove();
+                });
+                const wrap = document.createElement('div');
+                wrap.className = 'ltoa-table-wrap';
+                wrap.appendChild(clone);
+                content.appendChild(wrap);
+            } else {
+                const clone = sourceCalls.cloneNode(true);
+                clone.querySelectorAll('.ltoa-call-card').forEach(card => {
+                    if(kind && card.dataset.kind !== kind) card.remove();
+                });
+                content.appendChild(clone);
+            }
+            backdrop.classList.add('show');
+            return;
+        }
+
+        const closeDetail = event.target.closest('#ltoa-detail-close');
+        if(closeDetail){
+            event.preventDefault();
+            closeDetail.closest('.ltoa-detail-backdrop')?.classList.remove('show');
+            return;
+        }
+
+        const backdrop = event.target.classList?.contains('ltoa-detail-backdrop') ? event.target : null;
+        if(backdrop){
+            backdrop.classList.remove('show');
+            return;
+        }
+
+        // Vue par client.
+        if(event.target.closest('#ltoa-client-expand')){
+            root.querySelectorAll('[data-export-view="client"] .ltoa-client-card').forEach(card => card.open = true);
+            return;
+        }
+        if(event.target.closest('#ltoa-client-collapse')){
+            root.querySelectorAll('[data-export-view="client"] .ltoa-client-card').forEach(card => card.open = false);
+            return;
+        }
+
+        // Filtres Chronologie.
+        const chronoFilter = event.target.closest('.ltoa-chrono-filter');
+        if(chronoFilter){
+            const chrono = chronoFilter.closest('#ltoa-chrono-modal');
+            if(!chrono) return;
+            chrono.querySelectorAll('.ltoa-chrono-filter').forEach(btn => btn.classList.remove('active'));
+            chronoFilter.classList.add('active');
+            applyChronoFilters(chrono);
+        }
+    });
+
+    function applyChronoFilters(chrono){
+        if(!chrono) return;
+        const active = chrono.querySelector('.ltoa-chrono-filter.active');
+        const currentFilter = active?.dataset.filter || 'all';
+        const query = String(chrono.querySelector('#ltoa-chrono-search')?.value || '').toLowerCase().trim();
+        chrono.querySelectorAll('.ltoa-time-row').forEach(row => {
+            const categoryOk = currentFilter === 'all' || row.dataset.category === currentFilter;
+            const searchOk = !query || String(row.dataset.search || '').includes(query);
+            row.style.display = categoryOk && searchOk ? '' : 'none';
+        });
+    }
+
+    root.addEventListener('input', function(event){
+        if(event.target.matches('#ltoa-client-search')){
+            const query = normalize(event.target.value);
+            root.querySelectorAll('[data-export-view="client"] .ltoa-client-card').forEach(card => {
+                const match = !query || String(card.dataset.search || '').includes(query);
+                card.style.display = match ? '' : 'none';
+                if(query && match) card.open = true;
+            });
+        }
+
+        if(event.target.matches('#ltoa-chrono-search')){
+            applyChronoFilters(event.target.closest('#ltoa-chrono-modal'));
+        }
+    });
+
+    root.addEventListener('keydown', function(event){
+        if(event.key !== 'Escape') return;
+        const detail = root.querySelector('[data-export-view="main"] .ltoa-detail-backdrop.show');
+        if(detail){
+            detail.classList.remove('show');
+            return;
+        }
+        showView('main');
+    });
+})();
+                `;
 
                 const htmlContent = `<!DOCTYPE html>
 <html lang="fr">
@@ -4069,9 +4258,13 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Rapport d'activité - ${Utils.escapeHtml(this.data.user || '')} - ${Utils.escapeHtml(this.data.date || '')}</title>
     <meta name="generator" content="LTOA Modulr Rapport ${(typeof GM_info !== 'undefined' && GM_info.script && GM_info.script.version) ? GM_info.script.version : 'inconnue'}">
+    <style>${exportOverrides}</style>
 </head>
 <body>
-${clone.outerHTML}
+${mainHTML}
+${clientHTML}
+${chronoHTML}
+<script>${exportScript}<\/script>
 </body>
 </html>`;
 
@@ -4079,7 +4272,7 @@ ${clone.outerHTML}
                 const url = URL.createObjectURL(blob);
                 const link = document.createElement('a');
                 link.href = url;
-                link.download = `Rapport_${String(this.data.user || 'Utilisateur').replace(/\s+/g, '_')}_${String(this.data.date || '').replace(/\//g, '-')}.html`;
+                link.download = `Rapport_${String(this.data.user || 'Utilisateur').replace(/\\s+/g, '_')}_${String(this.data.date || '').replace(/\\//g, '-')}.html`;
                 document.body.appendChild(link);
                 link.click();
                 link.remove();
