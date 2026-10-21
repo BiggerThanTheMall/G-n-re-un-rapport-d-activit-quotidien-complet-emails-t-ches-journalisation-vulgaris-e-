@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         LTOA Modulr - Rapport Quotidien
 // @namespace    https://github.com/BiggerThanTheMall/tampermonkey-ltoa
-// @version      5.7.1
+// @version      5.8.0
 // @description  Génération automatique du rapport d’activité quotidien dans Modulr
 // @author       LTOA Assurances
 // @match        https://courtage.modulr.fr/*
@@ -2022,6 +2022,13 @@
             let currentPage = 1;
             let hasMorePages = true;
             const pageFingerprints = new Set();
+            this.lastAuditMeta = {
+                fetchedEntries: 0,
+                uniqueEntries: 0,
+                duplicateEntries: 0,
+                paginationRepeated: false,
+                paginationDiagnostic: ''
+            };
 
             try {
                 while (hasMorePages) {
@@ -2059,7 +2066,20 @@
                         .map(row => row.textContent.replace(/\s+/g, ' ').trim())
                         .join('|');
                     if (fingerprint && pageFingerprints.has(fingerprint)) {
-                        Utils.log(`Page ${currentPage} répétée par Modulr : arrêt sécurisé.`);
+                        this.lastAuditMeta.paginationRepeated = true;
+                        const paginationHints = Array.from(doc.querySelectorAll('a[href], input[name], select[name]'))
+                            .map(el => {
+                                const label = (el.textContent || el.getAttribute('title') || el.getAttribute('aria-label') || '').replace(/\s+/g, ' ').trim();
+                                const href = el.getAttribute('href') || '';
+                                const name = el.getAttribute('name') || '';
+                                const value = el.value || el.getAttribute('value') || '';
+                                return { label, href, name, value };
+                            })
+                            .filter(item => /page|suiv|next|pagin/i.test(`${item.label} ${item.href} ${item.name}`))
+                            .slice(0, 12);
+                        this.lastAuditMeta.paginationDiagnostic = JSON.stringify(paginationHints);
+                        Utils.log(`Page ${currentPage} répétée par Modulr : arrêt sécurisé. Pagination à diagnostiquer.`);
+                        if (paginationHints.length) Utils.log('Indices pagination Modulr:', paginationHints);
                         break;
                     }
                     if (fingerprint) pageFingerprints.add(fingerprint);
@@ -2108,9 +2128,7 @@
                                 const fieldSpan = cells[0]?.querySelector('span.high_margin_left');
                                 const fieldRaw = fieldSpan?.textContent?.trim() || cells[0]?.textContent?.trim() || '';
 
-                                const systemFields = ['last_update', 'last_update_user_id', 'creation_date', 'creation_user_id',
-                                                      'estimate_id', 'policy_id', 'claim_id', 'office_id', 'firm_id', 'bank_account_id'];
-                                if (fieldRaw && !systemFields.includes(fieldRaw)) {
+                                if (fieldRaw) {
                                     currentEntry.changes.push({
                                         fieldRaw: fieldRaw,
                                         field: Utils.translateField(fieldRaw),
@@ -2140,12 +2158,29 @@
                     }
                 }
 
-                Utils.log(`Total ${results.length} actions générales trouvées`);
+                Utils.log(`Total ${results.length} actions générales brutes trouvées`);
             } catch (error) {
                 Utils.log('Erreur collecte journalisation générale:', error);
             }
 
-            return this.keepUsefulUniqueLogs(results);
+            const seen = new Set();
+            const unique = [];
+            for (const log of results) {
+                const key = [
+                    log.actionRaw, log.tableRaw, log.entityId, log.entityName, log.date,
+                    (log.changes || []).map(c => `${c.fieldRaw}:${c.oldValueRaw}:${c.newValueRaw}`).join('|')
+                ].join('::');
+                if (seen.has(key)) {
+                    this.lastAuditMeta.duplicateEntries++;
+                    continue;
+                }
+                seen.add(key);
+                unique.push(log);
+            }
+            this.lastAuditMeta.fetchedEntries = results.length;
+            this.lastAuditMeta.uniqueEntries = unique.length;
+            Utils.log(`Journal brut conservé : ${unique.length} action(s) unique(s), ${this.lastAuditMeta.duplicateEntries} doublon(s) supprimé(s)`);
+            return unique;
         },
 
         // La journalisation brute contient aussi les emails, tâches, devis, contrats
@@ -2160,21 +2195,27 @@
                 'policy_id', 'claim_id', 'bank_account_id'
             ]);
             const seen = new Set();
+            const output = [];
 
-            return (results || []).filter(log => {
-                const table = `${log.tableRaw || ''} ${log.table || ''}`.toLowerCase();
-                if (alreadyReported.test(table)) return false;
+            for (const source of results || []) {
+                const table = `${source.tableRaw || ''} ${source.table || ''}`.toLowerCase();
+                if (alreadyReported.test(table)) continue;
 
-                log.changes = (log.changes || []).filter(change => !technicalFields.has(change.fieldRaw));
-                const isMeaningfulCreation = /insertion|création|insert/i.test(log.actionRaw || log.action || '');
-                if (!isMeaningfulCreation && log.changes.length === 0) return false;
+                const changes = (source.changes || [])
+                    .filter(change => !technicalFields.has(change.fieldRaw))
+                    .map(change => ({ ...change }));
 
+                const isMeaningfulCreation = /insertion|création|insert/i.test(source.actionRaw || source.action || '');
+                if (!isMeaningfulCreation && changes.length === 0) continue;
+
+                const log = { ...source, changes };
                 const key = [log.actionRaw, log.tableRaw, log.entityId, log.date,
-                    log.changes.map(c => `${c.fieldRaw}:${c.oldValueRaw}:${c.newValueRaw}`).join('|')].join('::');
-                if (seen.has(key)) return false;
+                    changes.map(c => `${c.fieldRaw}:${c.oldValueRaw}:${c.newValueRaw}`).join('|')].join('::');
+                if (seen.has(key)) continue;
                 seen.add(key);
-                return true;
-            });
+                output.push(log);
+            }
+            return output;
         },
 
         // Collecter les devis
@@ -2748,6 +2789,141 @@
         }
     };
 
+
+    // ============================================
+    // BIBLIOTHÈQUE MÉTIER DE JOURNALISATION
+    // La donnée brute n'est jamais supprimée. Cette couche ne fait que l'interpréter.
+    // ============================================
+    const JournalEventDictionary = {
+        normalize(value) {
+            return String(value || '')
+                .normalize('NFD').replace(/[\u0300-\u036f]/g, '')
+                .toLowerCase()
+                .replace(/[^a-z0-9_$<>]+/g, '_')
+                .replace(/^_+|_+$/g, '');
+        },
+
+        domain(log) {
+            const table = this.normalize(`${log?.tableRaw || ''} ${log?.table || ''}`);
+            if (/estimate|devis/.test(table)) return 'Devis';
+            if (/polic|contrat/.test(table)) return 'Contrats';
+            if (/claim|sinistre/.test(table)) return 'Sinistres';
+            if (/task|tache/.test(table)) return 'Tâches';
+            if (/email_reference/.test(table)) return 'Emails · références';
+            if (/email|sent_email/.test(table)) return 'Emails';
+            if (/document|ged|blob|file/.test(table)) return 'GED / Documents';
+            if (/client/.test(table)) return 'Clients';
+            if (/user|utilisateur/.test(table)) return 'Utilisateurs';
+            return log?.table || log?.tableRaw || 'Autre';
+        },
+
+        classify(log) {
+            const action = this.normalize(log?.actionRaw || log?.action);
+            const domain = this.domain(log);
+            const changes = log?.changes || [];
+            const fields = changes.map(c => this.normalize(c.fieldRaw));
+            const values = changes.map(c => `${c.oldValueRaw || ''} ${c.newValueRaw || ''}`).join(' ');
+            const has = (...names) => fields.some(field => names.some(name => field === name || field.includes(name)));
+            const change = (...names) => changes.find(c => {
+                const field = this.normalize(c.fieldRaw);
+                return names.some(name => field === name || field.includes(name));
+            });
+            const isInsert = /insertion|creation|insert/.test(action);
+            const isDelete = /suppression|delete/.test(action);
+
+            // GED / documents : règles génériques observables, sans dépendre d'un seul nom de table.
+            const gedSignal = /ged|document|piece|fichier|file|getelement/.test(this.normalize(`${log?.tableRaw || ''} ${log?.entityName || ''} ${fields.join(' ')}`))
+                || /\bdoc\s*\d+/i.test(values);
+            if (gedSignal) {
+                const docChange = changes.find(c => /doc\s*\d+/i.test(String(c.newValueRaw || '')))
+                    || changes.find(c => /ged|document|piece|fichier|getelement/i.test(String(c.fieldRaw || '')));
+                if (isDelete) return { known:true, technical:false, domain:'GED / Documents', label:'Document supprimé de la GED', subtype:'ged_delete', confidence:'probable' };
+                if (isInsert || docChange) return { known:true, technical:false, domain:'GED / Documents', label:'Document ajouté / classé en GED', subtype:'ged_add', confidence:'probable' };
+            }
+
+            if (domain === 'Tâches') {
+                if (isInsert) return { known:true, technical:false, domain, label:'Tâche créée', subtype:'task_create', confidence:'forte' };
+                const closed = change('completion_date','completed_date','closed_date','end_date','date_de_cloture');
+                if (closed) {
+                    const before = String(closed.oldValueRaw || '-').trim();
+                    const after = String(closed.newValueRaw || '-').trim();
+                    if ((before === '-' || !before) && after !== '-') return { known:true, technical:false, domain, label:'Tâche terminée', subtype:'task_close', confidence:'forte' };
+                    if (before !== '-' && (after === '-' || !after)) return { known:true, technical:false, domain, label:'Tâche rouverte', subtype:'task_reopen', confidence:'forte' };
+                }
+                if (has('recall_date','due_date')) return { known:true, technical:false, domain, label:'Tâche replanifiée', subtype:'task_reschedule', confidence:'forte' };
+                if (has('notes','note','content','description')) return { known:true, technical:false, domain, label:'Note / contenu de tâche modifié', subtype:'task_note', confidence:'forte' };
+                if (has('task_recipient','recipient_user_id','user_id')) return { known:true, technical:false, domain, label:'Tâche affectée à un collaborateur', subtype:'task_assign', confidence:'moyenne' };
+            }
+
+            if (domain === 'Emails') {
+                const status = change('status','statut');
+                if (status) {
+                    const before = this.normalize(status.oldValueRaw);
+                    const after = this.normalize(status.newValueRaw);
+                    if (after === 'sent') return { known:true, technical:false, domain, label:'Email envoyé', subtype:'email_sent', confidence:'forte' };
+                    if (after.includes('email_in_queue') || after.includes('queue')) return { known:true, technical:true, domain, label:'Email mis en file d’envoi', subtype:'email_queue', confidence:'forte' };
+                }
+                if (has('assigned_to','assigned_by')) return { known:true, technical:false, domain, label:'Email attribué à un collaborateur', subtype:'email_assign', confidence:'forte' };
+                if (isInsert && (has('sent_email_id','send_date','to','subject') || /sent_email/i.test(values))) {
+                    return { known:true, technical:false, domain, label:'Email créé / préparé', subtype:'email_create', confidence:'moyenne' };
+                }
+                if (has('blob_id','uid','eml_message_id','tracking_data_algorithm')) {
+                    return { known:true, technical:true, domain, label:'Traitement technique de l’email', subtype:'email_technical', confidence:'forte' };
+                }
+            }
+
+            if (domain === 'Emails · références') {
+                return { known:true, technical:true, domain, label:'Référence de conversation email enregistrée', subtype:'email_reference', confidence:'forte' };
+            }
+
+            if (domain === 'Utilisateurs' && has('email_filter')) {
+                return { known:true, technical:true, domain, label:'Filtre de boîte email modifié', subtype:'email_filter', confidence:'forte' };
+            }
+
+            // Devis / contrats / sinistres réutilisent la bibliothèque métier existante.
+            if (['Devis','Contrats','Sinistres'].includes(domain)) {
+                const c = ActivityDictionary.classify(log);
+                return {
+                    known: c.subtype !== 'autre' || c.kind !== 'update',
+                    technical: false,
+                    domain,
+                    label: c.label,
+                    subtype: `${domain.toLowerCase()}_${c.subtype || c.kind}`,
+                    confidence: c.subtype === 'autre' ? 'à qualifier' : 'forte'
+                };
+            }
+
+            if (isDelete) return { known:true, technical:false, domain, label:'Suppression', subtype:'delete', confidence:'moyenne' };
+            if (isInsert) return { known:false, technical:false, domain, label:'Création à classifier', subtype:'unknown_creation', confidence:'à qualifier' };
+
+            return { known:false, technical:false, domain, label:'À classifier', subtype:'unknown', confidence:'à qualifier' };
+        },
+
+        rawDetails(log, limit = 12) {
+            const changes = log?.changes || [];
+            if (!changes.length) return 'Aucun champ détaillé exposé par ModulR';
+            const parts = changes.slice(0, limit).map(change => {
+                const field = change.field || change.fieldRaw || 'Champ';
+                const before = String(change.oldValueRaw ?? change.oldValue ?? '-').trim() || '-';
+                const after = String(change.newValueRaw ?? change.newValue ?? '-').trim() || '-';
+                return `${field}: ${before} → ${after}`;
+            });
+            if (changes.length > limit) parts.push(`+${changes.length - limit} autre(s) champ(s)`);
+            return parts.join(' · ');
+        },
+
+        stats(logs) {
+            const stats = { total:0, known:0, unknown:0, technical:0 };
+            for (const log of logs || []) {
+                const c = this.classify(log);
+                stats.total++;
+                if (c.technical) stats.technical++;
+                if (c.known) stats.known++; else stats.unknown++;
+            }
+            return stats;
+        }
+    };
+
     // ============================================
     // GÉNÉRATEUR DE RAPPORT (UI)
     // ============================================
@@ -2760,6 +2936,8 @@
             tasksOverdue: [],
             pendingTasks: [],
             logs: [],
+            auditLogs: [],
+            auditMeta: {},
             estimates: [],
             policies: [],
             claims: [],
@@ -2771,7 +2949,7 @@
             const {
                 emailsSent = [], emailsAffected = [], pendingEmailsCount = 0,
                 aircallCalls = [], tasksCompleted = [], tasksOverdue = [], pendingTasks = [],
-                logs = [], estimates = [], policies = [], claims = [],
+                logs = [], auditLogs = [], auditMeta = {}, estimates = [], policies = [], claims = [],
                 assignedEstimates = { total: 0, statuses: [] },
                 user, date, notes, aircallStatus
             } = this.data;
@@ -3006,6 +3184,24 @@
                     <td>${Utils.escapeHtml(log.entityName || '')}</td>
                     <td>${Utils.escapeHtml(ActivityDictionary.summarize(log))}</td>
                 </tr>`).join('');
+
+            const auditStats = JournalEventDictionary.stats(auditLogs);
+            const auditRows = auditLogs.map(log => {
+                const classification = JournalEventDictionary.classify(log);
+                const status = classification.known ? (classification.technical ? 'Technique connue' : 'Reconnue') : 'À classifier';
+                return `
+                    <tr data-audit-status="${classification.known ? (classification.technical ? 'technical' : 'known') : 'unknown'}">
+                        <td class="ltoa-time">${Utils.escapeHtml(log.date || '')}</td>
+                        <td>${Utils.escapeHtml(classification.domain)}</td>
+                        <td><span class="ltoa-tag ${classification.known ? 'ltoa-update' : 'ltoa-delete'}">${Utils.escapeHtml(classification.label)}</span><div class="ltoa-row-meta">${Utils.escapeHtml(status)} · confiance ${Utils.escapeHtml(classification.confidence || '')}</div></td>
+                        <td>${Utils.escapeHtml(log.entityName || log.entityId || '—')}</td>
+                        <td>${Utils.escapeHtml(JournalEventDictionary.rawDetails(log))}</td>
+                    </tr>`;
+            }).join('');
+
+            const auditWarning = auditMeta?.paginationRepeated
+                ? `<div class="ltoa-warning">Journalisation : ModulR a renvoyé deux fois la même page. ${auditStats.total} action(s) unique(s) ont été conservées, mais la pagination complète n’est pas confirmée. Aucune donnée récupérée n’a été supprimée.</div>`
+                : '';
         
             const estimateStatusClass = label => {
                 const value = String(label || '').normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase();
@@ -3055,7 +3251,7 @@
                         .ltoa-work-grid{display:grid;grid-template-columns:1.45fr .8fr .8fr;gap:10px}.ltoa-work-card{border:1px solid #e7ebf0;background:rgba(255,255,255,.9);border-radius:18px;padding:15px;min-height:126px}.ltoa-work-card.main{border-color:#dbe7ff;background:linear-gradient(180deg,#f8fbff,#fff)}.ltoa-work-card-head{display:flex;justify-content:space-between;gap:12px;align-items:flex-start}.ltoa-work-card-head span{font-size:13px;font-weight:700;color:#344054}.ltoa-work-card-head strong{font-size:28px;line-height:1}.ltoa-work-card p{font-size:11px;color:#7a8695;margin:4px 0 12px}.ltoa-work-statuses{display:flex;flex-wrap:wrap;gap:7px}.ltoa-work-status{display:flex;flex-direction:column;min-width:86px;background:#f7f9fc;border:1px solid #edf0f3;border-radius:12px;padding:8px}.ltoa-work-status b{font-size:15px}.ltoa-work-status small{font-size:10px;color:#748091;margin-top:2px;line-height:1.25}
                         .ltoa-activity-head{margin:4px 0 12px}
                         .ltoa-section{background:transparent;border:0;border-top:1px solid #d7dfe8;border-bottom:1px solid #d7dfe8;border-radius:0;margin:8px 0;overflow:hidden;box-shadow:0 1px 0 rgba(15,23,42,.018)}
-                        .ltoa-section{--accent:#64748b;--accent-rgb:100,116,139;--accent-soft:#f1f5f9}.ltoa-section-estimates{--accent:#2563eb;--accent-rgb:37,99,235;--accent-soft:#eff6ff}.ltoa-section-policies{--accent:#7c3aed;--accent-rgb:124,58,237;--accent-soft:#f5f3ff}.ltoa-section-emails{--accent:#0891b2;--accent-rgb:8,145,178;--accent-soft:#ecfeff}.ltoa-section-tasks{--accent:#d97706;--accent-rgb:217,119,6;--accent-soft:#fffbeb}.ltoa-section-calls{--accent:#ea580c;--accent-rgb:234,88,12;--accent-soft:#fff7ed}.ltoa-section-claims{--accent:#dc2626;--accent-rgb:220,38,38;--accent-soft:#fef2f2}.ltoa-section-other{--accent:#475569;--accent-rgb:71,85,105;--accent-soft:#f8fafc}
+                        .ltoa-section{--accent:#64748b;--accent-rgb:100,116,139;--accent-soft:#f1f5f9}.ltoa-section-estimates{--accent:#2563eb;--accent-rgb:37,99,235;--accent-soft:#eff6ff}.ltoa-section-policies{--accent:#7c3aed;--accent-rgb:124,58,237;--accent-soft:#f5f3ff}.ltoa-section-emails{--accent:#0891b2;--accent-rgb:8,145,178;--accent-soft:#ecfeff}.ltoa-section-tasks{--accent:#d97706;--accent-rgb:217,119,6;--accent-soft:#fffbeb}.ltoa-section-calls{--accent:#ea580c;--accent-rgb:234,88,12;--accent-soft:#fff7ed}.ltoa-section-claims{--accent:#dc2626;--accent-rgb:220,38,38;--accent-soft:#fef2f2}.ltoa-section-other{--accent:#475569;--accent-rgb:71,85,105;--accent-soft:#f8fafc}.ltoa-section-audit{--accent:#0f766e;--accent-rgb:15,118,110;--accent-soft:#f0fdfa}
                         .ltoa-section>summary{border-left:0;background:linear-gradient(90deg,rgba(var(--accent-rgb),.11) 0,rgba(var(--accent-rgb),.065) 145px,rgba(var(--accent-rgb),.025) 245px,transparent 360px)}.ltoa-section-name strong{color:var(--accent)}.ltoa-section .ltoa-badge{background:transparent;color:var(--accent);padding:0;font-weight:700}.ltoa-section .ltoa-metric-btn{border-color:#e2e7ec;background:transparent;color:#667085}.ltoa-section .ltoa-metric-btn b{color:var(--accent)}
                         .ltoa-estimate-status.is-current{background:#eff6ff;border-color:#bfdbfe}.ltoa-estimate-status.is-current b{color:#1d4ed8}.ltoa-estimate-status.is-pricing{background:#f5f3ff;border-color:#ddd6fe}.ltoa-estimate-status.is-pricing b{color:#7c3aed}.ltoa-estimate-status.is-delivered{background:#ecfeff;border-color:#a5f3fc}.ltoa-estimate-status.is-delivered b{color:#0e7490}.ltoa-estimate-status.is-waiting-docs{background:#fffbeb;border-color:#fde68a}.ltoa-estimate-status.is-waiting-docs b{color:#b45309}.ltoa-estimate-status.is-waiting-approval{background:#fff7ed;border-color:#fed7aa}.ltoa-estimate-status.is-waiting-approval b{color:#c2410c}.ltoa-estimate-status.is-deferred{background:#f8fafc;border-color:#cbd5e1}.ltoa-estimate-status.is-deferred b{color:#475569}.ltoa-estimate-status.is-lost{background:#fef2f2;border-color:#fecaca}.ltoa-estimate-status.is-lost b{color:#b91c1c}.ltoa-estimate-status.is-transformed{background:#f0fdf4;border-color:#bbf7d0}.ltoa-estimate-status.is-transformed b{color:#15803d}.ltoa-estimate-status.is-subscription{background:#eef2ff;border-color:#c7d2fe}.ltoa-estimate-status.is-subscription b{color:#4338ca}
                         .ltoa-task-status.is-todo{background:#eff6ff;border-color:#bfdbfe}.ltoa-task-status.is-todo b{color:#1d4ed8}.ltoa-task-status.is-overdue{background:#fef2f2;border-color:#fecaca}.ltoa-task-status.is-overdue b{color:#b91c1c}.ltoa-task-status.is-done{background:#f0fdf4;border-color:#bbf7d0}.ltoa-task-status.is-done b{color:#15803d}
@@ -3194,6 +3390,21 @@
                                     `<span class="ltoa-muted">${logs.length} action${logs.length > 1 ? 's' : ''} complémentaire${logs.length > 1 ? 's' : ''}</span>`,
                                     table(['Date','Rubrique','Élément','Détail'], otherRows, 'Aucune autre action utile')
                                 ) : ''}
+                                ${auditLogs.length ? section(
+                                    'audit',
+                                    'Journalisation complète',
+                                    auditLogs.length,
+                                    `<span class="ltoa-muted"><b>${auditStats.known}</b> reconnue(s) · <b>${auditStats.unknown}</b> à classifier · <b>${auditStats.technical}</b> technique(s)</span>`,
+                                    `${auditWarning}
+                                    <div class="ltoa-inline-filters ltoa-audit-filters">
+                                        <span class="ltoa-inline-filter-label">Bibliothèque</span>
+                                        <button type="button" class="ltoa-inline-filter active" data-audit-filter="">Toutes <b>${auditStats.total}</b></button>
+                                        <button type="button" class="ltoa-inline-filter" data-audit-filter="known">Reconnues <b>${auditStats.known - auditStats.technical}</b></button>
+                                        <button type="button" class="ltoa-inline-filter" data-audit-filter="unknown">À classifier <b>${auditStats.unknown}</b></button>
+                                        <button type="button" class="ltoa-inline-filter" data-audit-filter="technical">Techniques <b>${auditStats.technical}</b></button>
+                                    </div>
+                                    ${table(['Date','Domaine','Interprétation','Fiche / élément','Données brutes'], auditRows, 'Aucune action de journalisation')}`
+                                ) : ''}
                             </main>
                         </div>
                     </div>
@@ -3288,10 +3499,20 @@
                 const sectionEl = button.closest('.ltoa-section');
                 if (!group || !sectionEl) return;
 
-                const kind = button.dataset.filterKind || '';
                 group.querySelectorAll('.ltoa-inline-filter').forEach(item => item.classList.remove('active'));
                 button.classList.add('active');
 
+                if (button.hasAttribute('data-audit-filter')) {
+                    const auditStatus = button.dataset.auditFilter || '';
+                    sectionEl.querySelectorAll('.ltoa-table tbody tr').forEach(row => {
+                        const rowStatus = row.getAttribute('data-audit-status') || '';
+                        row.hidden = !!auditStatus && rowStatus !== auditStatus;
+                        row.style.display = row.hidden ? 'none' : '';
+                    });
+                    return;
+                }
+
+                const kind = button.dataset.filterKind || '';
                 sectionEl.querySelectorAll('.ltoa-table tbody tr').forEach(row => {
                     const rowKind = row.getAttribute('data-kind') || '';
                     row.hidden = !!kind && rowKind !== kind;
@@ -4125,9 +4346,20 @@
             const group = filter.closest('.ltoa-inline-filters');
             const section = filter.closest('.ltoa-section');
             if(!group || !section) return;
-            const kind = filter.dataset.filterKind || '';
             group.querySelectorAll('.ltoa-inline-filter').forEach(btn => btn.classList.remove('active'));
             filter.classList.add('active');
+
+            if(filter.hasAttribute('data-audit-filter')){
+                const status = filter.dataset.auditFilter || '';
+                section.querySelectorAll('.ltoa-table tbody tr').forEach(row => {
+                    const show = !status || (row.getAttribute('data-audit-status') || '') === status;
+                    row.hidden = !show;
+                    row.style.display = show ? '' : 'none';
+                });
+                return;
+            }
+
+            const kind = filter.dataset.filterKind || '';
             section.querySelectorAll('.ltoa-table tbody tr').forEach(row => {
                 const show = !kind || (row.getAttribute('data-kind') || '') === kind;
                 row.hidden = !show;
@@ -4264,6 +4496,13 @@
 ${mainHTML}
 ${clientHTML}
 ${chronoHTML}
+<script type="application/json" id="ltoa-audit-data">${JSON.stringify({
+    schema: 'ltoa-journal-audit-v1',
+    user: this.data.user || '',
+    date: this.data.date || '',
+    meta: this.data.auditMeta || {},
+    logs: this.data.auditLogs || []
+}).replace(/</g, '\\u003c')}<\/script>
 <script>${exportScript}<\/script>
 </body>
 </html>`;
@@ -5058,9 +5297,13 @@ ${chronoHTML}
             const claims = await LogsCollector.collectClaims(userId, connectedUser, loader.updateStatus);
             await Utils.delay(CONFIG.DELAY_BETWEEN_REQUESTS);
 
-            // Étape 9: Autres actions (journalisation générale)
-            loader.update(9, 88, 'Collecte des autres actions...');
-            const logs = await LogsCollector.collect(userId, connectedUser, loader.updateStatus);
+            // Étape 9: Journalisation générale brute.
+            // On conserve TOUT ce que ModulR expose, puis on dérive séparément
+            // les "autres actions" utiles à l'ancienne vue.
+            loader.update(9, 88, 'Collecte de la journalisation complète...');
+            const auditLogs = await LogsCollector.collect(userId, connectedUser, loader.updateStatus);
+            const auditMeta = { ...(LogsCollector.lastAuditMeta || {}) };
+            const logs = LogsCollector.keepUsefulUniqueLogs(auditLogs);
 
             // Étape 10: Résolution des clients (correspondance email <-> N° client <-> nom)
             loader.update(10, 94, 'Résolution des clients...');
@@ -5090,6 +5333,8 @@ ${chronoHTML}
                 tasksOverdue: resolvedData.tasksOverdue,
                 pendingTasks: pendingTasks,
                 logs: resolvedData.logs,
+                auditLogs: auditLogs,
+                auditMeta: auditMeta,
                 estimates: resolvedData.estimates,
                 policies: resolvedData.policies,
                 claims: resolvedData.claims,
