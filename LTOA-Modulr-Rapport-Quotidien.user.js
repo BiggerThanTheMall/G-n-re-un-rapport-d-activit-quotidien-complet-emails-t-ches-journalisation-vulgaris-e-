@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         LTOA Modulr - Rapport Quotidien
 // @namespace    https://github.com/BiggerThanTheMall/tampermonkey-ltoa
-// @version      5.8.0
+// @version      5.9.0
 // @description  Génération automatique du rapport d’activité quotidien dans Modulr
 // @author       LTOA Assurances
 // @match        https://courtage.modulr.fr/*
@@ -2330,7 +2330,7 @@
             // Depuis les logs : un identifiant de devis/contrat/sinistre n'est PAS
             // un identifiant client. On utilise uniquement client_id lorsqu'il est
             // réellement présent dans les changements du journal.
-            [...data.estimates, ...data.policies, ...data.claims, ...data.logs].forEach(log => {
+            [...data.estimates, ...data.policies, ...data.claims, ...data.logs, ...(data.auditLogs || [])].forEach(log => {
                 const clientChange = (log.changes || []).find(change => change.fieldRaw === 'client_id');
                 if (!clientChange) return;
 
@@ -2687,7 +2687,7 @@
 
             // Logs (devis, contrats, sinistres) : enrichir uniquement avec un
             // véritable client_id identifié dans le journal.
-            [...data.estimates, ...data.policies, ...data.claims, ...data.logs].forEach(log => {
+            [...data.estimates, ...data.policies, ...data.claims, ...data.logs, ...(data.auditLogs || [])].forEach(log => {
                 if (log.clientId) {
                     const clientInfo = this.getClientInfo(log.clientId);
                     if (clientInfo) {
@@ -2794,6 +2794,32 @@
     // BIBLIOTHÈQUE MÉTIER DE JOURNALISATION
     // La donnée brute n'est jamais supprimée. Cette couche ne fait que l'interpréter.
     // ============================================
+    const CustomFieldDictionary = {
+        version: '2026-10-21',
+        fields: {"1":{"code":"cl.custom_0","label":"Régime","entity":"Client"},"2":{"code":"cl.custom_1","label":"Statut","entity":"Client"},"3":{"code":"es.custom_0","label":"Date d’effet souhaitée","entity":"Devis"},"4":{"code":"es.custom_1","label":"Offre santé actuelle","entity":"Devis"},"5":{"code":"es.custom_2","label":"Offre santé retenue","entity":"Devis"},"6":{"code":"es.custom_3","label":"Date de finalisation de l’offre","entity":"Devis"},"9":{"code":"es.custom_4","label":"Urgent","entity":"Devis"},"10":{"code":"es.custom_5","label":"Devis différé","entity":"Devis"},"11":{"code":"es.custom_6","label":"Contrat concurrent","entity":"Devis"},"12":{"code":"es.custom_7","label":"Assureur concurrent","entity":"Devis"},"13":{"code":"es.custom_8","label":"Cotisation contrat concurrent","entity":"Devis"},"14":{"code":"es.custom_9","label":"Date de mise en place du nouveau contrat","entity":"Devis"},"15":{"code":"es.custom_10","label":"En cours de souscription","entity":"Devis"},"16":{"code":"es.custom_11","label":"Contrat à remplacer (à utiliser que si un contrat est en cours chez nous)","entity":"Devis"},"18":{"code":"es.custom_12","label":"Binôme commercial","entity":"Devis"},"19":{"code":"es.custom_13","label":"Devis prêt","entity":"Devis"},"20":{"code":"es.custom_14","label":"Date de dernière relance ou envoi du devis","entity":"Devis"},"22":{"code":"cl.custom_2","label":"Opportunité commerciale - Qualité du Lead","entity":"Client"},"23":{"code":"cl.custom_3","label":"Opération commerciale","entity":"Client"},"24":{"code":"cl.custom_4","label":"Date dernier contact commercial","entity":"Client"},"25":{"code":"cl.custom_5","label":"Collaborateur ayant recontacté le prospect / client","entity":"Client"},"26":{"code":"cl.custom_6","label":"Nom cabinet","entity":"Client"},"27":{"code":"cl.custom_7","label":"Adresse mail","entity":"Client"},"28":{"code":"cl.custom_8","label":"Adresse postale","entity":"Client"},"29":{"code":"cl.custom_9","label":"Nom du contact","entity":"Client"},"30":{"code":"cl.custom_10","label":"Numéro de téléphone","entity":"Client"},"31":{"code":"cl.custom_11","label":"Notes et historiques Apporteur","entity":"Client"},"32":{"code":"es.custom_15","label":"Numéro de police concurrent","entity":"Devis"},"33":{"code":"es.custom_16","label":"Adresse assureur concurrent","entity":"Devis"},"34":{"code":"es.custom_17","label":"Code postal assureur concurrent","entity":"Devis"},"35":{"code":"es.custom_18","label":"Ville assureur concurrent","entity":"Devis"},"38":{"code":"es.custom_20","label":"Marque/Modèle du véhicule","entity":"Devis"},"40":{"code":"es.custom_22","label":"Date de première mise en circulation","entity":"Devis"},"41":{"code":"es.custom_23","label":"Kilométrage actuel","entity":"Devis"},"43":{"code":"es.custom_25","label":"Financement du véhicule","entity":"Devis"},"44":{"code":"es.custom_26","label":"Nombre de kilomètres par an","entity":"Devis"},"45":{"code":"es.custom_27","label":"Mode de stationnement","entity":"Devis"},"46":{"code":"es.custom_28","label":"Fréquence d'utilisation","entity":"Devis"},"48":{"code":"es.custom_30","label":"Date d'obtention du permis","entity":"Devis"},"50":{"code":"es.custom_32","label":"Conducteur principal - Nom","entity":"Devis"},"51":{"code":"es.custom_33","label":"Conducteur principal - Prénom","entity":"Devis"},"52":{"code":"es.custom_34","label":"Conducteur principal - Date de naissance","entity":"Devis"},"53":{"code":"es.custom_35","label":"Points perdus sur le permis","entity":"Devis"},"54":{"code":"es.custom_36","label":"Permis suspendu ou annulé","entity":"Devis"},"56":{"code":"es.custom_38","label":"Conduit un autre véhicule","entity":"Devis"},"57":{"code":"es.custom_39","label":"Conducteur secondaire","entity":"Devis"},"58":{"code":"es.custom_40","label":"Conducteur secondaire - Nom","entity":"Devis"},"59":{"code":"es.custom_41","label":"Conducteur secondaire - Prénom","entity":"Devis"},"60":{"code":"es.custom_42","label":"Type de couverture souhaitée","entity":"Devis"},"62":{"code":"es.custom_19","label":"Carte grise définitive (décocher si provisoire)","entity":"Devis"},"63":{"code":"es.custom_24","label":"Usage du véhicule","entity":"Devis"},"64":{"code":"es.custom_21","label":"Catégorie permis de conduire","entity":"Devis"},"65":{"code":"es.custom_29","label":"Date d'effet du contrat concurrent","entity":"Devis"},"66":{"code":"es.custom_31","label":"Nombre de véhicules au foyer, y compris celui-ci","entity":"Devis"},"67":{"code":"es.custom_43","label":"Origine du véhicule","entity":"Devis"},"68":{"code":"es.custom_44","label":"Sinistres déclarés sur les 3 dernières années ?","entity":"Devis"},"69":{"code":"es.custom_45","label":"Conformité du relevé d'information","entity":"Devis"},"70":{"code":"es.custom_37","label":"Type d'habitation","entity":"Devis"},"71":{"code":"es.custom_46","label":"Qualité de résidence","entity":"Devis"},"72":{"code":"es.custom_47","label":"Carte grise du véhicule à assurer","entity":"Devis"},"73":{"code":"es.custom_48","label":"Relevé d'informations conforme","entity":"Devis"},"74":{"code":"es.custom_49","label":"Permis de conduire","entity":"Devis"},"75":{"code":"es.custom_50","label":"CRM - Bonus/Malus","entity":"Devis"},"76":{"code":"es.custom_51","label":"RIB paiement des cotisations","entity":"Devis"},"77":{"code":"es.custom_52","label":"Pièce d'identité du souscripteur","entity":"Devis"},"78":{"code":"es.custom_53","label":"Mandat de résiliation signé","entity":"Devis"},"80":{"code":"es.custom_54","label":"Statut","entity":"Devis"},"81":{"code":"es.custom_55","label":"Composition familiale","entity":"Devis"},"83":{"code":"es.custom_57","label":"Hospitalisation","entity":"Devis"},"84":{"code":"es.custom_58","label":"Soins courants","entity":"Devis"},"85":{"code":"es.custom_59","label":"Dentaire","entity":"Devis"},"86":{"code":"es.custom_60","label":"Optique","entity":"Devis"},"87":{"code":"es.custom_61","label":"Prévention / Médecine douce","entity":"Devis"},"88":{"code":"es.custom_62","label":"Médicaments non remboursés","entity":"Devis"},"89":{"code":"es.custom_63","label":"Chambre particulière","entity":"Devis"},"90":{"code":"es.custom_64","label":"Dépassement d’honoraires","entity":"Devis"},"91":{"code":"es.custom_65","label":"Orthodontie non remboursée","entity":"Devis"},"92":{"code":"es.custom_66","label":"Orthodontie enfant -16 ans","entity":"Devis"},"93":{"code":"es.custom_67","label":"Forfait dentaire non remboursé (parodontologie, implant)","entity":"Devis"},"94":{"code":"es.custom_68","label":"Lentilles","entity":"Devis"},"95":{"code":"es.custom_69","label":"Optique complexe","entity":"Devis"},"96":{"code":"es.custom_70","label":"Cure thermale","entity":"Devis"},"97":{"code":"es.custom_56","label":"Attestation de droit","entity":"Devis"},"98":{"code":"es.custom_71","label":"Date de naissance des bénéficiaires","entity":"Devis"},"99":{"code":"es.custom_72","label":"RIB pour le remboursement des frais de santé","entity":"Devis"},"100":{"code":"es.custom_73","label":"Date d'acquisition","entity":"Devis"},"102":{"code":"cl.custom_12","label":"Numéro de sécurité sociale","entity":"Client"},"103":{"code":"es.custom_74","label":"Nombre de personnes résidant au foyer","entity":"Devis"},"104":{"code":"es.custom_75","label":"Nombre d'enfants à charge","entity":"Devis"},"105":{"code":"es.custom_76","label":"Personne Politiquement Exposée (PPE)","entity":"Devis"},"106":{"code":"es.custom_77","label":"Adresse du risque","entity":"Devis"},"107":{"code":"es.custom_78","label":"Code Postal du risque","entity":"Devis"},"108":{"code":"es.custom_79","label":"Ville du risque","entity":"Devis"},"109":{"code":"es.custom_80","label":"Statut d'occupation","entity":"Devis"},"110":{"code":"es.custom_81","label":"Type de résidence","entity":"Devis"},"111":{"code":"es.custom_82","label":"Si Appartement : Étage","entity":"Devis"},"112":{"code":"es.custom_83","label":"Superficie habitable (m²)","entity":"Devis"},"113":{"code":"es.custom_84","label":"Nombre de pièces","entity":"Devis"},"114":{"code":"es.custom_85","label":"Surface dépendances (m²)","entity":"Devis"},"115":{"code":"es.custom_86","label":"Garage","entity":"Devis"},"116":{"code":"es.custom_87","label":"Véranda","entity":"Devis"},"117":{"code":"es.custom_88","label":"Piscine","entity":"Devis"},"118":{"code":"es.custom_89","label":"Construction en bois","entity":"Devis"},"119":{"code":"es.custom_90","label":"Bâtiment classé monuments historiques","entity":"Devis"},"120":{"code":"es.custom_91","label":"Immeuble de grande hauteur (IGH)","entity":"Devis"},"121":{"code":"es.custom_92","label":"Installation chauffage bois (insert, poêle...)","entity":"Devis"},"122":{"code":"es.custom_93","label":"Système d'alarme vol","entity":"Devis"},"124":{"code":"es.custom_95","label":"Animaux domestiques (type et/ou nombre)","entity":"Devis"},"125":{"code":"es.custom_96","label":"Durée d'inhabitation (par an)","entity":"Devis"},"126":{"code":"es.custom_97","label":"Capital mobilier total","entity":"Devis"},"127":{"code":"es.custom_98","label":"Dont Objets de valeur / précieux","entity":"Devis"},"128":{"code":"es.custom_99","label":"Dont Objets sensibles","entity":"Devis"},"129":{"code":"es.custom_100","label":"Déjà assuré","entity":"Devis"},"130":{"code":"es.custom_101","label":"Assureur précédent","entity":"Devis"},"131":{"code":"es.custom_102","label":"Résilié par un assureur (24 mois)","entity":"Devis"},"132":{"code":"es.custom_103","label":"Sinistres (36 derniers mois)","entity":"Devis"},"133":{"code":"es.custom_104","label":"Nombre de sinistres (36 mois)","entity":"Devis"},"134":{"code":"es.custom_105","label":"Dégâts des eaux","entity":"Devis"},"135":{"code":"es.custom_106","label":"Incendie et événements clim.","entity":"Devis"},"136":{"code":"es.custom_107","label":"Vol et vandalisme","entity":"Devis"},"137":{"code":"es.custom_108","label":"Bris de glace","entity":"Devis"},"138":{"code":"es.custom_109","label":"Responsabilité civile vie privée","entity":"Devis"},"139":{"code":"es.custom_110","label":"Responsabilité civile occupant","entity":"Devis"},"140":{"code":"es.custom_111","label":"Protection juridique","entity":"Devis"},"141":{"code":"es.custom_112","label":"Montant Bris de glace Véranda","entity":"Devis"},"142":{"code":"es.custom_113","label":"Montant Piscine","entity":"Devis"},"143":{"code":"es.custom_114","label":"Montant Équipements extérieurs","entity":"Devis"},"144":{"code":"es.custom_115","label":"RC chambre d'hôtes","entity":"Devis"},"145":{"code":"es.custom_116","label":"RC assistante maternelle","entity":"Devis"},"146":{"code":"es.custom_117","label":"RC Accueil à domicile","entity":"Devis"},"147":{"code":"es.custom_118","label":"Assurance scolaire","entity":"Devis"},"148":{"code":"es.custom_119","label":"Nombre d'enfants (Ass. Scolaire)","entity":"Devis"},"149":{"code":"es.custom_120","label":"Date d'effet souhaitée","entity":"Devis"},"150":{"code":"es.custom_121","label":"Fractionnement souhaité","entity":"Devis"},"152":{"code":"es.custom_94","label":"Bail ou Titre de propriété","entity":"Devis"},"153":{"code":"es.custom_122","label":"Spécificité de la maison","entity":"Devis"},"154":{"code":"es.custom_123","label":"Résidence principale ou secondaire","entity":"Devis"},"155":{"code":"es.custom_124","label":"Nombre total d’étages de l’immeuble","entity":"Devis"},"156":{"code":"es.custom_125","label":"Combien d’étages fait la maison","entity":"Devis"}},
+        listValues: {
+            'cl.custom_0': {'131':'Alsace Moselle','112':'CPAM','113':'Local','115':'MSA Exploitant','116':'MSA Salarié','114':'RSI/SSI'},
+            'cl.custom_2': {'148':'0 - Client / Prospect à catégoriser','149':'1 - Client sans opportunité commerciale','150':'2 - Client froid - Potentiel commercial peu probable','151':'3 - Client chaud - Potentiel commercial possible','152':'4 - Client très chaud - Potentiel commercial certain','155':'B - Bénéficiaire - Sans potentiel commercial'},
+            'cl.custom_3': {'154':'Opération anciens clients ALLIANZ','153':'Opération santé APRIL'},
+            'cl.custom_5': {'138':'Eddy','144':'Ghais','141':'Jake','217':'Louli','139':'Nadia','163':'Youness','140':'ZZZ_Faicel','142':'ZZZ_Inssaf','143':'ZZZ_Wesley'}
+        },
+        get(id) {
+            return this.fields[String(id || '').trim()] || null;
+        },
+        decodeList(code, value) {
+            const raw = String(value ?? '').trim();
+            return this.listValues[code]?.[raw] || raw;
+        },
+        describe(id) {
+            const item = this.get(id);
+            return item ? `${item.label} (${item.code})` : `Champ personnalisé #${id || '?'}`;
+        }
+    };
+
+    // ============================================
+    // BIBLIOTHÈQUE MÉTIER DE JOURNALISATION
+    // Mapping validé ensemble : le brut est conservé, l'interprétation est additive.
+    // ============================================
     const JournalEventDictionary = {
         normalize(value) {
             return String(value || '')
@@ -2805,16 +2831,27 @@
 
         domain(log) {
             const table = this.normalize(`${log?.tableRaw || ''} ${log?.table || ''}`);
+            if (/custom_fields_values/.test(table)) return 'Champs personnalisés';
             if (/estimate|devis/.test(table)) return 'Devis';
             if (/polic|contrat/.test(table)) return 'Contrats';
             if (/claim|sinistre/.test(table)) return 'Sinistres';
             if (/task|tache/.test(table)) return 'Tâches';
             if (/email_reference/.test(table)) return 'Emails · références';
+            if (/document|ged|blob|file/.test(table) && !/sent_emails_attachments/.test(table)) return 'GED / Documents';
             if (/email|sent_email/.test(table)) return 'Emails';
-            if (/document|ged|blob|file/.test(table)) return 'GED / Documents';
             if (/client/.test(table)) return 'Clients';
             if (/user|utilisateur/.test(table)) return 'Utilisateurs';
             return log?.table || log?.tableRaw || 'Autre';
+        },
+
+        change(log, ...names) {
+            const wanted = names.map(name => this.normalize(name));
+            return (log?.changes || []).find(c => wanted.includes(this.normalize(c.fieldRaw)));
+        },
+
+        newValue(log, ...names) {
+            const c = this.change(log, ...names);
+            return String(c?.newValueRaw ?? c?.newValue ?? '').trim();
         },
 
         classify(log) {
@@ -2822,105 +2859,351 @@
             const domain = this.domain(log);
             const changes = log?.changes || [];
             const fields = changes.map(c => this.normalize(c.fieldRaw));
-            const values = changes.map(c => `${c.oldValueRaw || ''} ${c.newValueRaw || ''}`).join(' ');
-            const has = (...names) => fields.some(field => names.some(name => field === name || field.includes(name)));
-            const change = (...names) => changes.find(c => {
-                const field = this.normalize(c.fieldRaw);
-                return names.some(name => field === name || field.includes(name));
-            });
+            const has = (...names) => fields.some(field => names.map(n=>this.normalize(n)).includes(field));
             const isInsert = /insertion|creation|insert/.test(action);
             const isDelete = /suppression|delete/.test(action);
 
-            // GED / documents : règles génériques observables, sans dépendre d'un seul nom de table.
-            const gedSignal = /ged|document|piece|fichier|file|getelement/.test(this.normalize(`${log?.tableRaw || ''} ${log?.entityName || ''} ${fields.join(' ')}`))
-                || /\bdoc\s*\d+/i.test(values);
-            if (gedSignal) {
-                const docChange = changes.find(c => /doc\s*\d+/i.test(String(c.newValueRaw || '')))
-                    || changes.find(c => /ged|document|piece|fichier|getelement/i.test(String(c.fieldRaw || '')));
-                if (isDelete) return { known:true, technical:false, domain:'GED / Documents', label:'Document supprimé de la GED', subtype:'ged_delete', confidence:'probable' };
-                if (isInsert || docChange) return { known:true, technical:false, domain:'GED / Documents', label:'Document ajouté / classé en GED', subtype:'ged_add', confidence:'probable' };
+            if (domain === 'Champs personnalisés') {
+                const fieldId = this.newValue(log, 'custom_field_id') || this.change(log,'custom_field_id')?.oldValueRaw;
+                const meta = CustomFieldDictionary.get(fieldId);
+                const meaningful = changes.find(c => /^value(?:_|$)/i.test(c.fieldRaw || '') &&
+                    !/custom_field_value_id/i.test(c.fieldRaw || '') &&
+                    String(c.newValueRaw ?? c.newValue ?? '').trim() &&
+                    String(c.newValueRaw ?? c.newValue ?? '').trim() !== '-');
+                if (isInsert && !meaningful) {
+                    return {known:true,technical:true,domain,label:`Initialisation technique · ${meta?.label || 'champ personnalisé'}`,subtype:'custom_init',confidence:'forte'};
+                }
+                return {known:!!meta,technical:false,domain,label:meaningful ? `Champ renseigné · ${meta?.label || ('#'+fieldId)}` : `Champ modifié · ${meta?.label || ('#'+fieldId)}`,subtype:'custom_value',confidence:meta?'forte':'à qualifier'};
             }
 
             if (domain === 'Tâches') {
-                if (isInsert) return { known:true, technical:false, domain, label:'Tâche créée', subtype:'task_create', confidence:'forte' };
-                const closed = change('completion_date','completed_date','closed_date','end_date','date_de_cloture');
+                const eventType = this.newValue(log, 'event_type');
+                const origin = this.normalize(this.newValue(log, 'origin'));
+                if (eventType === '47' && origin === 'automatic') return {known:true,technical:true,domain,label:'Événement automatique · email reçu',subtype:'task_email_received',confidence:'forte'};
+                if (eventType === '48' && origin === 'automatic') return {known:true,technical:true,domain,label:'Événement automatique · email envoyé',subtype:'task_email_sent',confidence:'forte'};
+                if (eventType === '49') return {known:true,technical:true,domain,label:'Trace ModulR · appel entrant',subtype:'task_call_in',confidence:'forte'};
+                if (eventType === '50') return {known:true,technical:true,domain,label:'Trace ModulR · appel sortant',subtype:'task_call_out',confidence:'forte'};
+                const state = this.normalize(this.newValue(log,'task_state'));
+                if (state === 'cancelled' || state === 'canceled') return {known:true,technical:false,domain,label:'Tâche annulée',subtype:'task_cancel',confidence:'forte'};
+                const closed = this.change(log,'closing_date','completion_date','completed_date','closed_date','date_de_cloture');
                 if (closed) {
-                    const before = String(closed.oldValueRaw || '-').trim();
-                    const after = String(closed.newValueRaw || '-').trim();
-                    if ((before === '-' || !before) && after !== '-') return { known:true, technical:false, domain, label:'Tâche terminée', subtype:'task_close', confidence:'forte' };
-                    if (before !== '-' && (after === '-' || !after)) return { known:true, technical:false, domain, label:'Tâche rouverte', subtype:'task_reopen', confidence:'forte' };
+                    const before=String(closed.oldValueRaw||'-').trim(), after=String(closed.newValueRaw||'-').trim();
+                    if ((before==='-'||!before) && after && after!=='-') return {known:true,technical:false,domain,label:'Tâche clôturée',subtype:'task_close',confidence:'forte'};
+                    if (before && before!=='-' && (!after||after==='-')) return {known:true,technical:false,domain,label:'Tâche rouverte',subtype:'task_reopen',confidence:'forte'};
                 }
-                if (has('recall_date','due_date')) return { known:true, technical:false, domain, label:'Tâche replanifiée', subtype:'task_reschedule', confidence:'forte' };
-                if (has('notes','note','content','description')) return { known:true, technical:false, domain, label:'Note / contenu de tâche modifié', subtype:'task_note', confidence:'forte' };
-                if (has('task_recipient','recipient_user_id','user_id')) return { known:true, technical:false, domain, label:'Tâche affectée à un collaborateur', subtype:'task_assign', confidence:'moyenne' };
+                if (has('recall_date','due_date')) return {known:true,technical:false,domain,label:'Tâche replanifiée',subtype:'task_reschedule',confidence:'forte'};
+                if (has('notes','note','content','description')) return {known:true,technical:false,domain,label:'Note de suivi modifiée',subtype:'task_note',confidence:'forte'};
+                if (has('task_recipient','recipient_user_id','user_id')) return {known:true,technical:false,domain,label:'Tâche réaffectée',subtype:'task_assign',confidence:'forte'};
+                if (isInsert) return {known:true,technical:false,domain,label:'Tâche créée',subtype:'task_create',confidence:'forte'};
             }
 
             if (domain === 'Emails') {
-                const status = change('status','statut');
+                const actionCode=this.newValue(log,'action');
+                const deleted=this.newValue(log,'deleted');
+                const read=this.change(log,'read');
+                const status=this.change(log,'status','statut');
+                const target=changes.find(c => ['client_id','estimate_id','policy_id','claim_id','company_id','contact_id','folder_id'].includes(c.fieldRaw) &&
+                    String(c.newValueRaw ?? '').trim() && String(c.newValueRaw).trim()!=='-');
+
+                if (actionCode==='3' && deleted==='1') return {known:true,technical:false,domain,label:'Email supprimé',subtype:'email_delete',confidence:'forte'};
+                if (actionCode==='1' && target) return {known:true,technical:false,domain,label:'Email classé / rattaché',subtype:'email_classified',confidence:'forte'};
+                if (read) {
+                    const before=String(read.oldValueRaw||'-').trim(), after=String(read.newValueRaw||'-').trim();
+                    if (after==='1') return {known:true,technical:false,domain,label:'Email lu',subtype:'email_read',confidence:'forte'};
+                    if (before==='1' && (!after||after==='-')) return {known:true,technical:false,domain,label:'Email remis non lu',subtype:'email_unread',confidence:'forte'};
+                }
                 if (status) {
-                    const before = this.normalize(status.oldValueRaw);
-                    const after = this.normalize(status.newValueRaw);
-                    if (after === 'sent') return { known:true, technical:false, domain, label:'Email envoyé', subtype:'email_sent', confidence:'forte' };
-                    if (after.includes('email_in_queue') || after.includes('queue')) return { known:true, technical:true, domain, label:'Email mis en file d’envoi', subtype:'email_queue', confidence:'forte' };
+                    const after=this.normalize(status.newValueRaw);
+                    if (after==='sent') return {known:true,technical:false,domain,label:'Email envoyé',subtype:'email_sent',confidence:'forte'};
+                    if (after.includes('email_in_queue') || after.includes('queue')) return {known:true,technical:true,domain,label:'Email mis en file d’envoi',subtype:'email_queue',confidence:'forte'};
                 }
-                if (has('assigned_to','assigned_by')) return { known:true, technical:false, domain, label:'Email attribué à un collaborateur', subtype:'email_assign', confidence:'forte' };
-                if (isInsert && (has('sent_email_id','send_date','to','subject') || /sent_email/i.test(values))) {
-                    return { known:true, technical:false, domain, label:'Email créé / préparé', subtype:'email_create', confidence:'moyenne' };
-                }
-                if (has('blob_id','uid','eml_message_id','tracking_data_algorithm')) {
-                    return { known:true, technical:true, domain, label:'Traitement technique de l’email', subtype:'email_technical', confidence:'forte' };
-                }
+                if (has('assigned_to','assigned_by')) return {known:true,technical:false,domain,label:'Email attribué à un collaborateur',subtype:'email_assign',confidence:'forte'};
+                if (isInsert && has('email_id','blob_id','uid')) return {known:true,technical:true,domain,label:'Email importé lors de la relève',subtype:'email_import',confidence:'forte'};
+                if (isInsert && has('sent_email_id','send_date','to','subject')) return {known:true,technical:true,domain,label:'Préparation technique d’un email envoyé',subtype:'email_create',confidence:'forte'};
             }
 
-            if (domain === 'Emails · références') {
-                return { known:true, technical:true, domain, label:'Référence de conversation email enregistrée', subtype:'email_reference', confidence:'forte' };
+            if (domain === 'GED / Documents') {
+                if (has('last_consulting_date')) return {known:true,technical:false,domain,label:'Document consulté',subtype:'ged_consult',confidence:'forte'};
+                if (this.newValue(log,'deleted')==='1' || isDelete) return {known:true,technical:false,domain,label:'Document supprimé',subtype:'ged_delete',confidence:'forte'};
+                if (has('filename','title') && !isInsert) return {known:true,technical:false,domain,label:'Document renommé',subtype:'ged_rename',confidence:'forte'};
+                if (isInsert) return {known:true,technical:false,domain,label:'Document créé dans ModulR',subtype:'ged_insert',confidence:'forte'};
             }
 
-            if (domain === 'Utilisateurs' && has('email_filter')) {
-                return { known:true, technical:true, domain, label:'Filtre de boîte email modifié', subtype:'email_filter', confidence:'forte' };
-            }
+            if (domain === 'Emails · références') return {known:true,technical:true,domain,label:'Référence technique de conversation email',subtype:'email_reference',confidence:'forte'};
+            if (domain === 'Utilisateurs' && has('email_filter')) return {known:true,technical:true,domain,label:'Filtre de boîte email modifié',subtype:'email_filter',confidence:'forte'};
+            if (domain === 'Utilisateurs' && has('session_id')) return {known:true,technical:true,domain,label:'Session utilisateur mise à jour',subtype:'user_session',confidence:'forte'};
 
-            // Devis / contrats / sinistres réutilisent la bibliothèque métier existante.
             if (['Devis','Contrats','Sinistres'].includes(domain)) {
-                const c = ActivityDictionary.classify(log);
-                return {
-                    known: c.subtype !== 'autre' || c.kind !== 'update',
-                    technical: false,
-                    domain,
-                    label: c.label,
-                    subtype: `${domain.toLowerCase()}_${c.subtype || c.kind}`,
-                    confidence: c.subtype === 'autre' ? 'à qualifier' : 'forte'
-                };
+                const c=ActivityDictionary.classify(log);
+                return {known:c.subtype!=='autre'||c.kind!=='update',technical:false,domain,label:c.label,subtype:`${domain.toLowerCase()}_${c.subtype||c.kind}`,confidence:c.subtype==='autre'?'à qualifier':'forte'};
             }
 
-            if (isDelete) return { known:true, technical:false, domain, label:'Suppression', subtype:'delete', confidence:'moyenne' };
-            if (isInsert) return { known:false, technical:false, domain, label:'Création à classifier', subtype:'unknown_creation', confidence:'à qualifier' };
-
-            return { known:false, technical:false, domain, label:'À classifier', subtype:'unknown', confidence:'à qualifier' };
+            if (domain === 'Clients' && has('important_note')) return {known:true,technical:false,domain,label:'Note importante client modifiée',subtype:'client_important_note',confidence:'forte'};
+            if (isDelete) return {known:true,technical:false,domain,label:'Suppression',subtype:'delete',confidence:'moyenne'};
+            if (isInsert) return {known:false,technical:false,domain,label:'Création à classifier',subtype:'unknown_creation',confidence:'à qualifier'};
+            return {known:false,technical:false,domain,label:'À classifier',subtype:'unknown',confidence:'à qualifier'};
         },
 
-        rawDetails(log, limit = 12) {
-            const changes = log?.changes || [];
-            if (!changes.length) return 'Aucun champ détaillé exposé par ModulR';
-            const parts = changes.slice(0, limit).map(change => {
-                const field = change.field || change.fieldRaw || 'Champ';
-                const before = String(change.oldValueRaw ?? change.oldValue ?? '-').trim() || '-';
-                const after = String(change.newValueRaw ?? change.newValue ?? '-').trim() || '-';
+        rawDetails(log, limit=12) {
+            const changes=log?.changes||[];
+            if(!changes.length) return 'Aucun champ détaillé exposé par ModulR';
+            const parts=changes.slice(0,limit).map(change=>{
+                let field=change.field||change.fieldRaw||'Champ';
+                if(change.fieldRaw==='custom_field_id'){
+                    const meta=CustomFieldDictionary.get(change.newValueRaw||change.oldValueRaw);
+                    if(meta) field=`Champ personnalisé · ${meta.label} (${meta.code})`;
+                }
+                const before=String(change.oldValueRaw ?? change.oldValue ?? '-').trim()||'-';
+                const after=String(change.newValueRaw ?? change.newValue ?? '-').trim()||'-';
                 return `${field}: ${before} → ${after}`;
             });
-            if (changes.length > limit) parts.push(`+${changes.length - limit} autre(s) champ(s)`);
+            if(changes.length>limit) parts.push(`+${changes.length-limit} autre(s) champ(s)`);
             return parts.join(' · ');
         },
 
         stats(logs) {
-            const stats = { total:0, known:0, unknown:0, technical:0 };
-            for (const log of logs || []) {
-                const c = this.classify(log);
+            const stats={total:0,known:0,unknown:0,technical:0};
+            for(const log of logs||[]){
+                const c=this.classify(log);
                 stats.total++;
-                if (c.technical) stats.technical++;
-                if (c.known) stats.known++; else stats.unknown++;
+                if(c.technical) stats.technical++;
+                if(c.known) stats.known++; else stats.unknown++;
             }
             return stats;
+        }
+    };
+
+    // ============================================
+    // CROISEMENT MÉTIER DES SOURCES
+    // N'ajoute jamais silencieusement un doublon : la source principale reste prioritaire.
+    // ============================================
+    const JournalIntelligence = {
+        normalize(value){ return JournalEventDictionary.normalize(value); },
+        time(log){ const m=String(log?.date||'').match(/(\d{1,2}:\d{2})/); return m?m[1].padStart(5,'0'):''; },
+        change(log,name){ return JournalEventDictionary.change(log,name); },
+        newValue(log,name){ return JournalEventDictionary.newValue(log,name); },
+        clientId(log){
+            if(log?.clientId) return String(log.clientId);
+            const c=this.change(log,'client_id');
+            const v=String(c?.newValueRaw||c?.oldValueRaw||'').trim();
+            if(/^\d+$/.test(v)) return v;
+            const table=this.normalize(`${log?.tableRaw||''} ${log?.table||''}`);
+            if(/(^|_)clients?(_|$)/.test(table) && /^\d+$/.test(String(log?.entityId||''))) return String(log.entityId);
+            return null;
+        },
+        entityValue(log,name){
+            const c=this.change(log,name);
+            const v=String(c?.newValueRaw||c?.oldValueRaw||'').trim();
+            return v && v!=='-' ? v : '';
+        },
+        addedText(before,after){
+            const a=Utils.cleanRichText(before||''), b=Utils.cleanRichText(after||'');
+            if(!b) return '';
+            if(a && b.startsWith(a)) return b.slice(a.length).replace(/^\s*[-–—:;,.]*\s*/,'').trim() || b;
+            return b;
+        },
+        analyze({auditLogs=[],tasksCompleted=[],emailsSent=[],emailsAffected=[],aircallCalls=[],auditMeta={}}={}){
+            const events=[];
+            const uniqueById=(items,idFn)=>{ const map=new Map(); for(const item of items){const id=idFn(item); if(id&&!map.has(id)) map.set(id,item);} return map; };
+            const logGroups=new Map();
+            for(const log of auditLogs){
+                const key=`${this.normalize(log.tableRaw||log.table)}:${log.entityId||''}`;
+                if(!logGroups.has(key)) logGroups.set(key,[]);
+                logGroups.get(key).push(log);
+            }
+
+            // --- Tâches : clôtures croisées, annulations exclues.
+            const taskGroups=new Map();
+            for(const log of auditLogs){
+                if(JournalEventDictionary.domain(log)!=='Tâches' || !log.entityId) continue;
+                const id=String(log.entityId);
+                if(!taskGroups.has(id)) taskGroups.set(id,[]);
+                taskGroups.get(id).push(log);
+            }
+            const journalClosed=[];
+            for(const [id,group] of taskGroups){
+                const cancelled=group.some(log=>['cancelled','canceled'].includes(this.normalize(this.newValue(log,'task_state'))));
+                const closeLog=group.find(log=>{
+                    const c=this.change(log,'closing_date')||this.change(log,'completion_date')||this.change(log,'completed_date')||this.change(log,'closed_date');
+                    const after=String(c?.newValueRaw||'').trim();
+                    return c && after && after!=='-';
+                });
+                if(closeLog && !cancelled) journalClosed.push({id,log:closeLog});
+                for(const log of group){
+                    const note=this.change(log,'notes');
+                    if(note){
+                        const delta=this.addedText(note.oldValueRaw,note.newValueRaw);
+                        if(delta) events.push({category:'tasks',subtype:'task_note',source:'Journalisation',time:this.time(log),title:'Note de suivi ajoutée',clientId:this.clientId(log),clientName:log.clientName||'',entityId:id,detail:`Tâche n° ${id}`,summary:delta});
+                    }
+                    const recall=this.change(log,'recall_date');
+                    if(recall) events.push({category:'tasks',subtype:'task_reschedule',source:'Journalisation',time:this.time(log),title:'Tâche replanifiée',clientId:this.clientId(log),clientName:log.clientName||'',entityId:id,detail:`${recall.oldValueRaw||'-'} → ${recall.newValueRaw||'-'}`,summary:''});
+                }
+            }
+            const engineTaskMap=uniqueById(tasksCompleted,t=>String(t.id||''));
+            const journalTaskMap=new Map(journalClosed.map(x=>[String(x.id),x]));
+            const taskJournalOnly=[...journalTaskMap.keys()].filter(id=>!engineTaskMap.has(id)).map(id=>journalTaskMap.get(id));
+            const taskEngineOnly=[...engineTaskMap.keys()].filter(id=>!journalTaskMap.has(id)).map(id=>engineTaskMap.get(id));
+            for(const extra of taskJournalOnly){
+                const log=extra.log;
+                events.push({category:'tasks',subtype:'task_close_journal_only',source:'Journalisation',time:this.time(log),title:'Tâche clôturée · Journalisation uniquement',clientId:this.clientId(log),clientName:log.clientName||'',entityId:extra.id,detail:`Tâche n° ${extra.id}`,summary:''});
+            }
+
+            // --- Emails : métadonnées et contrôle des envois.
+            const emailMeta=new Map();
+            for(const log of auditLogs){
+                if(JournalEventDictionary.domain(log)!=='Emails' || !log.entityId) continue;
+                const id=String(log.entityId);
+                const meta=emailMeta.get(id)||{id,clientId:null,clientName:'',subject:'',from:'',to:''};
+                meta.clientId=meta.clientId||this.clientId(log);
+                meta.clientName=meta.clientName||log.clientName||'';
+                for(const field of ['subject','from','to']){
+                    const v=this.entityValue(log,field);
+                    if(v) meta[field]=v;
+                }
+                emailMeta.set(id,meta);
+            }
+            const journalSent=[];
+            for(const log of auditLogs){
+                const c=JournalEventDictionary.classify(log);
+                if(c.subtype==='email_sent' && log.entityId) journalSent.push({id:String(log.entityId),log});
+            }
+            const engineEmailMap=uniqueById(emailsSent,e=>String(e.id||''));
+            const journalEmailMap=new Map(journalSent.map(x=>[x.id,x]));
+            const sentJournalOnly=[...journalEmailMap.keys()].filter(id=>!engineEmailMap.has(id)).map(id=>journalEmailMap.get(id));
+            const sentEngineOnly=[...engineEmailMap.keys()].filter(id=>!journalEmailMap.has(id)).map(id=>engineEmailMap.get(id));
+            for(const extra of sentJournalOnly){
+                const meta=emailMeta.get(extra.id)||{};
+                events.push({category:'emails',subtype:'email_sent_journal_only',source:'Journalisation',time:this.time(extra.log),title:meta.subject||`Email envoyé n° ${extra.id}`,clientId:meta.clientId,clientName:meta.clientName||'',entityId:extra.id,detail:meta.to?`À ${meta.to}`:'Détecté uniquement dans la journalisation',summary:''});
+            }
+
+            // Contexte automatique event_type 47 : il peut porter le devis/contrat/sinistre.
+            const auto47=auditLogs.filter(log=>JournalEventDictionary.domain(log)==='Tâches' && this.newValue(log,'event_type')==='47');
+            const existingAffected=new Set(emailsAffected.map(e=>String(e.id||'')));
+            for(const log of auditLogs){
+                if(JournalEventDictionary.domain(log)!=='Emails' || !log.entityId) continue;
+                const id=String(log.entityId), meta=emailMeta.get(id)||{};
+                const classification=JournalEventDictionary.classify(log);
+                if(classification.subtype==='email_classified'){
+                    const targetFields=['client_id','estimate_id','policy_id','claim_id','company_id','contact_id','folder_id'];
+                    const targetNames={client_id:'Client',estimate_id:'Devis',policy_id:'Contrat',claim_id:'Sinistre',company_id:'Compagnie',contact_id:'Contact',folder_id:'Dossier'};
+                    const targets=[];
+                    for(const field of targetFields){
+                        const value=this.entityValue(log,field);
+                        if(value) targets.push(`${targetNames[field]} ${value}`);
+                    }
+                    const minute=this.time(log), clientId=this.clientId(log);
+                    const candidates=auto47.filter(t=>this.time(t)===minute && (!clientId || this.clientId(t)===clientId));
+                    if(candidates.length===1){
+                        const auto=candidates[0];
+                        for(const field of ['estimate_id','policy_id','claim_id','company_id','contact_id','folder_id']){
+                            const value=this.entityValue(auto,field);
+                            const label=targetNames[field];
+                            if(value && !targets.includes(`${label} ${value}`)) targets.push(`${label} ${value}`);
+                        }
+                    }
+                    events.push({category:'emails',subtype:'email_classified',source:'Journalisation',time:minute,title:meta.subject||`Email n° ${id}`,clientId:clientId||meta.clientId,clientName:log.clientName||meta.clientName||'',entityId:id,detail:`Classé / rattaché · ${targets.join(' · ')||'cible non résolue'}`,summary:meta.from?`De ${meta.from}`:'',alreadyCollected:existingAffected.has(id)});
+                } else if(classification.subtype==='email_read' || classification.subtype==='email_unread'){
+                    events.push({category:'emails',subtype:classification.subtype,source:'Journalisation',time:this.time(log),title:meta.subject||`Email n° ${id}`,clientId:this.clientId(log)||meta.clientId,clientName:log.clientName||meta.clientName||'',entityId:id,detail:classification.label,summary:meta.from?`De ${meta.from}`:''});
+                } else if(classification.subtype==='email_delete'){
+                    events.push({category:'emails',subtype:'email_delete',source:'Journalisation',time:this.time(log),title:meta.subject||`Email n° ${id}`,clientId:this.clientId(log)||meta.clientId,clientName:log.clientName||meta.clientName||'',entityId:id,detail:'Supprimé via la corbeille ModulR',summary:meta.from?`De ${meta.from}`:''});
+                } else if(classification.subtype==='email_assign'){
+                    const by=this.entityValue(log,'assigned_by'), to=this.entityValue(log,'assigned_to');
+                    events.push({category:'emails',subtype:'email_assign',source:'Journalisation',time:this.time(log),title:meta.subject||`Email n° ${id}`,clientId:this.clientId(log)||meta.clientId,clientName:log.clientName||meta.clientName||'',entityId:id,detail:`Affectation collaborateur${by?` · par ID ${by}`:''}${to?` → ID ${to}`:''}`,summary:meta.from?`De ${meta.from}`:''});
+                }
+            }
+
+            // --- GED : regrouper insertion + renommage. Les PJ d'emails ne sont pas comptées comme classement GED.
+            const attachmentDocumentIds=new Set();
+            for(const log of auditLogs){
+                const table=this.normalize(`${log.tableRaw||''} ${log.table||''}`);
+                if(!/sent_emails_attachments/.test(table)) continue;
+                const docId=this.entityValue(log,'document_id');
+                if(docId) attachmentDocumentIds.add(docId);
+            }
+            const docGroups=new Map();
+            for(const log of auditLogs){
+                if(JournalEventDictionary.domain(log)!=='GED / Documents' || !log.entityId) continue;
+                const id=String(log.entityId);
+                if(!docGroups.has(id)) docGroups.set(id,[]);
+                docGroups.get(id).push(log);
+            }
+            for(const [id,group] of docGroups){
+                group.sort((a,b)=>String(a.date||'').localeCompare(String(b.date||'')));
+                for(const log of group){
+                    const consult=this.change(log,'last_consulting_date');
+                    if(consult){
+                        events.push({category:'ged_consult',subtype:'ged_consult',source:'Journalisation',time:this.time(log),title:`Document n° ${id}`,clientId:this.clientId(log),clientName:log.clientName||'',entityId:id,detail:`Consultation · ${consult.oldValueRaw||'-'} → ${consult.newValueRaw||'-'}`,summary:''});
+                    }
+                }
+                if(attachmentDocumentIds.has(id)) continue;
+                const insert=group.find(log=>/insertion|creation|insert/i.test(log.actionRaw||log.action||''));
+                const renamed=group.filter(log=>this.change(log,'filename')||this.change(log,'title'));
+                const deleted=group.find(log=>this.newValue(log,'deleted')==='1' || /suppression|delete/i.test(log.actionRaw||log.action||''));
+                if(!insert && !renamed.length && !deleted) continue;
+                const contextLog=group.find(log=>this.clientId(log))||group[0];
+                const firstName=this.entityValue(insert||group[0],'filename')||this.entityValue(insert||group[0],'title');
+                let finalName=firstName;
+                for(const log of renamed){
+                    finalName=this.entityValue(log,'filename')||this.entityValue(log,'title')||finalName;
+                }
+                const context=[];
+                for(const field of ['estimate_id','policy_id','claim_id']){
+                    const found=group.map(log=>this.entityValue(log,field)).find(Boolean);
+                    if(found) context.push(`${field==='estimate_id'?'Devis':field==='policy_id'?'Contrat':'Sinistre'} ${found}`);
+                }
+                const label=deleted?'Document supprimé':insert?'Document ajouté / classé':'Document renommé';
+                const renameDetail=firstName&&finalName&&firstName!==finalName?`${firstName} → ${finalName}`:(finalName||`Document n° ${id}`);
+                events.push({category:'ged',subtype:deleted?'ged_delete':insert?'ged_add':'ged_rename',source:'Journalisation',time:this.time(insert||renamed[0]||deleted),title:label,clientId:this.clientId(contextLog),clientName:contextLog?.clientName||'',entityId:id,detail:[renameDetail,...context].filter(Boolean).join(' · '),summary:''});
+            }
+
+            // --- Champs personnalisés : ignorer l'initialisation vide, exploiter une vraie valeur/modification.
+            for(const log of auditLogs){
+                if(JournalEventDictionary.domain(log)!=='Champs personnalisés') continue;
+                const fieldId=this.entityValue(log,'custom_field_id');
+                const meta=CustomFieldDictionary.get(fieldId);
+                if(!meta) continue;
+                const valueChange=(log.changes||[]).find(c=>/^value(?:_|$)/i.test(c.fieldRaw||'') && !/custom_field_value_id/i.test(c.fieldRaw||''));
+                const after=String(valueChange?.newValueRaw ?? valueChange?.newValue ?? '').trim();
+                const before=String(valueChange?.oldValueRaw ?? valueChange?.oldValue ?? '').trim();
+                const isInsert=/insertion|creation|insert/i.test(log.actionRaw||log.action||'');
+                if(isInsert && (!after || after==='-')) continue;
+                if(!valueChange) continue;
+                const decoded=CustomFieldDictionary.decodeList(meta.code,after);
+                const beforeDecoded=CustomFieldDictionary.decodeList(meta.code,before);
+                const detail=before && before!=='-' ? `${meta.label} : ${beforeDecoded||before} → ${decoded||after}` : `${meta.label} → ${decoded||after}`;
+                events.push({category:meta.entity==='Client'?'client':'estimates',subtype:'custom_field',source:'Journalisation',time:this.time(log),title:`${meta.entity} · champ personnalisé`,clientId:this.clientId(log),clientName:log.clientName||'',entityId:log.entityId||'',detail,summary:`${meta.code} · ID interne ${fieldId}`});
+            }
+
+            // --- Aircall : vérifier que l'appel a créé sa note/event ModulR.
+            const callJournal=auditLogs.filter(log=>{
+                if(JournalEventDictionary.domain(log)!=='Tâches') return false;
+                const eventType=this.newValue(log,'event_type');
+                return eventType==='49'||eventType==='50';
+            });
+            const enrichedCalls=(aircallCalls||[]).map(call=>{
+                const callId=String(call.id||'');
+                let match=callJournal.find(log=>String(this.entityValue(log,'call_id'))===callId);
+                if(!match){
+                    const typeWanted=call.type==='sortant'?'50':'49';
+                    const minute=String(call.time||'').slice(0,5);
+                    const candidates=callJournal.filter(log=>this.newValue(log,'event_type')===typeWanted && this.time(log)===minute);
+                    if(candidates.length===1) match=candidates[0];
+                }
+                if(match){
+                    const notes=this.entityValue(match,'notes')||this.entityValue(match,'content');
+                    return {...call,modulrNoteStatus:'ok',modulrTaskId:String(match.entityId||''),modulrClientId:this.clientId(match),modulrNote:notes};
+                }
+                return {...call,modulrNoteStatus:'missing'};
+            });
+
+            return {
+                events,
+                aircallCalls: enrichedCalls,
+                crossChecks:{
+                    tasks:{engineCount:engineTaskMap.size,journalCount:journalTaskMap.size,journalOnly:taskJournalOnly,engineOnly:taskEngineOnly,paginationIncomplete:!!auditMeta.paginationRepeated},
+                    emailsSent:{engineCount:engineEmailMap.size,journalCount:journalEmailMap.size,journalOnly:sentJournalOnly,engineOnly:sentEngineOnly,paginationIncomplete:!!auditMeta.paginationRepeated}
+                }
+            };
         }
     };
 
@@ -2938,6 +3221,8 @@
             logs: [],
             auditLogs: [],
             auditMeta: {},
+            journalEvents: [],
+            crossChecks: {},
             estimates: [],
             policies: [],
             claims: [],
@@ -2949,7 +3234,7 @@
             const {
                 emailsSent = [], emailsAffected = [], pendingEmailsCount = 0,
                 aircallCalls = [], tasksCompleted = [], tasksOverdue = [], pendingTasks = [],
-                logs = [], auditLogs = [], auditMeta = {}, estimates = [], policies = [], claims = [],
+                logs = [], auditLogs = [], auditMeta = {}, journalEvents = [], crossChecks = {}, estimates = [], policies = [], claims = [],
                 assignedEstimates = { total: 0, statuses: [] },
                 user, date, notes, aircallStatus
             } = this.data;
@@ -3077,6 +3362,54 @@
                         ${text ? `<div class="ltoa-note-text">${Utils.escapeHtml(text)}</div>` : ''}
                     </div>`;
             }).join('');
+
+            const renderSourceCrossCheck = (label, check, itemLabel) => {
+                if (!check) return '';
+                const journalOnly = check.journalOnly || [];
+                const engineOnly = check.engineOnly || [];
+                if (!journalOnly.length && !engineOnly.length) return '';
+                const sourceHint = check.paginationIncomplete ? ' · pagination journalisation incomplète détectée' : '';
+                const rows = [];
+                for (const item of journalOnly) {
+                    const log = item.log || item;
+                    rows.push(`<div class="ltoa-cross-row is-journal"><b>Journalisation uniquement</b><span>${Utils.escapeHtml(itemLabel)} ${Utils.escapeHtml(item.id || log.entityId || '—')} · ${Utils.escapeHtml(log.date || '')}</span></div>`);
+                }
+                for (const item of engineOnly) {
+                    rows.push(`<div class="ltoa-cross-row is-engine"><b>Moteur principal uniquement</b><span>${Utils.escapeHtml(itemLabel)} ${Utils.escapeHtml(item.id || '—')} · ${Utils.escapeHtml(item.closedTime || item.time || item.date || '')}</span></div>`);
+                }
+                return `
+                    <div class="ltoa-cross-check">
+                        <div class="ltoa-cross-head"><strong>Contrôle croisé · ${Utils.escapeHtml(label)}</strong><span>Moteur ${check.engineCount} · Journalisation ${check.journalCount}${Utils.escapeHtml(sourceHint)}</span></div>
+                        ${rows.join('')}
+                    </div>`;
+            };
+
+            const taskCrossHtml = renderSourceCrossCheck('Tâches clôturées', crossChecks.tasks, 'Tâche n°');
+            const emailCrossHtml = renderSourceCrossCheck('Emails envoyés', crossChecks.emailsSent, 'Email n°');
+
+            const extraEmailEvents = journalEvents.filter(event => event.category === 'emails' && (
+                event.subtype !== 'email_classified' || !event.alreadyCollected
+            ));
+            const journalEmailRows = extraEmailEvents.map(event => `
+                <tr class="ltoa-journal-row">
+                    <td class="ltoa-time">${Utils.escapeHtml(event.time || '')}</td>
+                    <td><span class="ltoa-tag ltoa-update">${Utils.escapeHtml(event.detail || event.title || 'Journalisation')}</span><div class="ltoa-row-meta">Source : Journalisation</div></td>
+                    <td class="ltoa-client">${Utils.escapeHtml(event.clientName || (event.clientId ? 'Client n° ' + event.clientId : '—'))}</td>
+                    <td>${Utils.escapeHtml(event.entityId ? 'Email n° ' + event.entityId : '—')}</td>
+                    <td>${Utils.escapeHtml(event.title || '')}${event.summary ? `<div class="ltoa-row-meta">${Utils.escapeHtml(event.summary)}</div>` : ''}</td>
+                </tr>`).join('');
+
+            const gedEvents = journalEvents.filter(event => event.category === 'ged');
+            const gedConsultEvents = journalEvents.filter(event => event.category === 'ged_consult');
+            const customFieldEvents = journalEvents.filter(event => event.subtype === 'custom_field');
+            const journalEventRows = items => items.map(event => `
+                <tr>
+                    <td class="ltoa-time">${Utils.escapeHtml(event.time || '')}</td>
+                    <td>${Utils.escapeHtml(event.title || '')}<div class="ltoa-row-meta">Source : Journalisation</div></td>
+                    <td class="ltoa-client">${Utils.escapeHtml(event.clientName || (event.clientId ? 'Client n° ' + event.clientId : '—'))}</td>
+                    <td>${Utils.escapeHtml(event.detail || '')}</td>
+                    <td>${Utils.escapeHtml(event.summary || '')}</td>
+                </tr>`).join('');
         
             const section = (id, title, count, summary, body) => `
                 <details class="ltoa-section ltoa-section-${id}" id="ltoa-section-${id}">
@@ -3194,7 +3527,7 @@
                         <td class="ltoa-time">${Utils.escapeHtml(log.date || '')}</td>
                         <td>${Utils.escapeHtml(classification.domain)}</td>
                         <td><span class="ltoa-tag ${classification.known ? 'ltoa-update' : 'ltoa-delete'}">${Utils.escapeHtml(classification.label)}</span><div class="ltoa-row-meta">${Utils.escapeHtml(status)} · confiance ${Utils.escapeHtml(classification.confidence || '')}</div></td>
-                        <td>${Utils.escapeHtml(log.entityName || log.entityId || '—')}</td>
+                        <td>${Utils.escapeHtml(log.clientName || (log.clientId ? 'Client n° ' + log.clientId : (log.entityName || log.entityId || '—')))}</td>
                         <td>${Utils.escapeHtml(JournalEventDictionary.rawDetails(log))}</td>
                     </tr>`;
             }).join('');
@@ -3244,7 +3577,7 @@
                         .ltoa-content{min-width:0}.ltoa-topbar{position:sticky;top:0;z-index:5;min-height:74px;background:rgba(248,250,253,.88);backdrop-filter:blur(16px);border-bottom:1px solid rgba(228,231,235,.78);display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap;padding:13px 24px}
                         .ltoa-title{min-width:220px;flex:1 1 auto}.ltoa-title h1{font-size:29px;margin:0 0 3px;font-weight:760;letter-spacing:-.03em}.ltoa-title span{font-size:13px;color:#7a8695}.ltoa-actions{display:flex;align-items:center;justify-content:flex-end;gap:8px;flex-wrap:wrap;flex:0 1 auto}.ltoa-user-pill{border:1px solid #e5e9ef;background:#fff;border-radius:999px;padding:9px 12px;font-size:13px;font-weight:700;color:#344054}.ltoa-btn{border:1px solid #e1e6ec;background:#fff;border-radius:999px;padding:9px 12px;font-size:13px;cursor:pointer;color:#344150}.ltoa-btn:hover{background:#f7f9fb}.ltoa-close{font-size:18px;line-height:1;padding:7px 10px}
                         .ltoa-main{max-width:1500px;margin:0 auto;padding:22px 24px 42px}
-                        .ltoa-warning{background:#fff1f1;border:1px solid #f0c7c7;color:#9b2c2c;border-radius:12px;padding:11px 14px;margin-bottom:14px;font-size:12px}
+                        .ltoa-warning{background:#fff1f1;border:1px solid #f0c7c7;color:#9b2c2c;border-radius:12px;padding:11px 14px;margin-bottom:14px;font-size:12px}.ltoa-cross-check{border:1px solid #fed7aa;background:#fffaf4;border-radius:12px;padding:10px 12px;margin:0 0 10px}.ltoa-cross-head{display:flex;justify-content:space-between;gap:10px;align-items:center;margin-bottom:7px}.ltoa-cross-head strong{font-size:11px;color:#9a3412}.ltoa-cross-head span{font-size:9px;color:#9a6b4a}.ltoa-cross-row{display:flex;justify-content:space-between;gap:10px;border-top:1px solid #ffedd5;padding:6px 0;font-size:10px}.ltoa-cross-row b{color:#c2410c}.ltoa-cross-row span{color:#7c4a2d}.ltoa-journal-row{background:#fffaf0}.ltoa-section-ged{--accent:#0f766e;--accent-rgb:15,118,110;--accent-soft:#f0fdfa}.ltoa-section-ged_consult{--accent:#64748b;--accent-rgb:100,116,139;--accent-soft:#f8fafc}.ltoa-section-custom_fields{--accent:#9333ea;--accent-rgb:147,51,234;--accent-soft:#faf5ff}
                 .ltoa-report-note{background:linear-gradient(180deg,rgba(255,255,255,.98),rgba(255,255,255,.9));border:1px solid #e4e8ed;border-radius:16px;padding:14px 16px;margin-bottom:14px;box-shadow:0 8px 24px rgba(15,23,42,.025)}.ltoa-report-note strong{display:block;font-size:10px;text-transform:uppercase;letter-spacing:.08em;color:#98a2b3;margin-bottom:6px}.ltoa-report-note div{font-size:13px;line-height:1.55;color:#344054;white-space:pre-wrap}
                         .ltoa-workload{width:100%;background:linear-gradient(180deg,rgba(255,255,255,.96),rgba(255,255,255,.82));border:1px solid rgba(228,231,235,.92);border-radius:24px;padding:20px;box-shadow:0 18px 50px rgba(15,23,42,.06);margin-bottom:24px}
                         .ltoa-work-head{display:flex;justify-content:space-between;align-items:flex-end;gap:20px;margin-bottom:16px}.ltoa-kicker{font-size:11px;color:#98a2b3;text-transform:uppercase;letter-spacing:.09em;margin-bottom:5px}.ltoa-work-head h2,.ltoa-activity-head h2{font-size:23px;margin:0;letter-spacing:-.02em}.ltoa-work-head p,.ltoa-activity-head p{font-size:13px;color:#748091;margin:4px 0 0}.ltoa-work-total{text-align:right}.ltoa-work-total strong{font-size:31px;line-height:1}.ltoa-work-total span{display:block;font-size:10px;color:#7a8695;margin-top:4px}
@@ -3353,7 +3686,7 @@
                                     'Emails',
                                     emailsSent.length + emailsAffected.length,
                                     emailSummary,
-                                    table(['Heure','Action','Client / interlocuteur','Référence','Objet'], emailRows, 'Aucune activité email')
+                                    `${emailCrossHtml}${table(['Heure','Action','Client / interlocuteur','Référence','Objet'], emailRows + journalEmailRows, 'Aucune activité email')}`
                                 )}
         
                                 ${section(
@@ -3361,7 +3694,7 @@
                                     'Tâches',
                                     tasksCompleted.length,
                                     `<span class="ltoa-metric-btn" style="cursor:default"><b>${tasksCompleted.length}</b> terminées</span>`,
-                                    tasksCompleted.length ? renderTaskCards(tasksCompleted) : '<div class="ltoa-empty">Aucune tâche terminée aujourd’hui</div>'
+                                    `${taskCrossHtml}${tasksCompleted.length ? renderTaskCards(tasksCompleted) : '<div class="ltoa-empty">Aucune tâche terminée aujourd’hui</div>'}`
                                 )}
         
                                 ${section(
@@ -3372,6 +3705,30 @@
                                     renderCallCards()
                                 )}
         
+                                ${gedEvents.length ? section(
+                                    'ged',
+                                    'GED / Documents',
+                                    gedEvents.length,
+                                    `<span class="ltoa-muted"><b>${gedEvents.length}</b> action(s) documentaire(s) détectée(s)</span>`,
+                                    table(['Heure','Action','Client','Document / contexte','Détail'], journalEventRows(gedEvents), 'Aucune action GED')
+                                ) : ''}
+
+                                ${gedConsultEvents.length ? section(
+                                    'ged_consult',
+                                    'Consultations GED',
+                                    gedConsultEvents.length,
+                                    `<span class="ltoa-muted"><b>${gedConsultEvents.length}</b> consultation(s) · chronologie complémentaire</span>`,
+                                    table(['Heure','Action','Client','Document','Détail'], journalEventRows(gedConsultEvents), 'Aucune consultation GED')
+                                ) : ''}
+
+                                ${customFieldEvents.length ? section(
+                                    'custom_fields',
+                                    'Fiches & champs personnalisés',
+                                    customFieldEvents.length,
+                                    `<span class="ltoa-muted"><b>${customFieldEvents.length}</b> valeur(s) réellement renseignée(s) ou modifiée(s)</span>`,
+                                    table(['Heure','Entité','Client','Modification','Code'], journalEventRows(customFieldEvents), 'Aucun champ personnalisé modifié')
+                                ) : ''}
+
                                 ${section(
                                     'claims',
                                     'Sinistres',
@@ -3539,7 +3896,7 @@
     try {
         const {
             emailsSent = [], emailsAffected = [], aircallCalls = [],
-            tasksCompleted = [], tasksOverdue = [], logs = [],
+            tasksCompleted = [], tasksOverdue = [], logs = [], journalEvents = [],
             estimates = [], policies = [], claims = [],
             user = '', date = ''
         } = this.data;
@@ -3572,7 +3929,8 @@
                     estimates: [],
                     policies: [],
                     claims: [],
-                    logs: []
+                    logs: [],
+                    journalEvents: []
                 });
             }
 
@@ -3638,6 +3996,11 @@
             'claims',
             item
         ));
+
+        journalEvents.forEach(item => {
+            if (!item.clientId && !item.clientName) return;
+            addToClient(item.clientName, item.clientId, null, 'journalEvents', item);
+        });
 
         logs.forEach(item => {
             const table = normalize(`${item.tableRaw || ''} ${item.table || ''}`);
@@ -3711,7 +4074,7 @@
                 return;
             }
             const target = mergeById.get(key);
-            for (const field of ['emailsSent','emailsAffected','aircallCalls','tasksCompleted','tasksOverdue','estimates','policies','claims','logs']) {
+            for (const field of ['emailsSent','emailsAffected','aircallCalls','tasksCompleted','tasksOverdue','estimates','policies','claims','logs','journalEvents']) {
                 target[field].push(...client[field]);
             }
             if (!target.email && client.email) target.email = client.email;
@@ -3721,7 +4084,7 @@
         const activityCount = client =>
             client.emailsSent.length + client.emailsAffected.length + client.aircallCalls.length +
             client.tasksCompleted.length + client.estimates.length + client.policies.length +
-            client.claims.length + client.logs.length;
+            client.claims.length + client.logs.length + client.journalEvents.length;
 
         const activeClients = Array.from(mergeById.values())
             .filter(client => activityCount(client) > 0)
@@ -3794,6 +4157,7 @@
                         <div>
                             <strong>${call.type === 'sortant' ? 'Appel sortant' : 'Appel entrant'} · ${Utils.escapeHtml(call.contact || call.phone || '—')}</strong>
                             <small>${Utils.escapeHtml(call.time || '')} · ${Utils.escapeHtml(call.duration || '0s')}${call.mood ? ` · ${Utils.escapeHtml(call.mood)}` : ''}</small>
+                            <small>${call.modulrNoteStatus === 'ok' ? '✓ Note ModulR créée' : '⚠ Note ModulR non retrouvée'}</small>
                         </div>
                     </div>
                     ${call.summary ? `<div class="ltoa-sub-text"><b>Résumé</b><br>${Utils.escapeHtml(call.summary)}</div>` : ''}
@@ -3840,6 +4204,16 @@
                     <div class="ltoa-sub-row-detail">${Utils.escapeHtml(ActivityDictionary.summarize(log))}</div>
                 </div>`).join('');
 
+            const journalClientRows = client.journalEvents.map(event => `
+                <div class="ltoa-sub-row">
+                    <div>
+                        <strong>${Utils.escapeHtml(event.title || event.label || 'Journalisation')}</strong>
+                        <small>${Utils.escapeHtml(event.time || '')} · Source Journalisation</small>
+                    </div>
+                    <div class="ltoa-sub-row-detail">${Utils.escapeHtml(event.detail || '')}</div>
+                    ${event.summary ? renderText(event.summary) : ''}
+                </div>`).join('');
+
             return `
                 <details class="ltoa-client-card" data-search="${Utils.escapeHtml(search)}" ${index < 3 ? 'open' : ''}>
                     <summary>
@@ -3864,6 +4238,7 @@
                         ${renderGroup('Tâches terminées', client.tasksCompleted.length, completedTasks)}
                         ${renderGroup('Tâches en retard', client.tasksOverdue.length, overdueTasks)}
                         ${renderGroup('Devis, contrats et sinistres', client.estimates.length + client.policies.length + client.claims.length, documents)}
+                        ${renderGroup('Journalisation enrichie', client.journalEvents.length, journalClientRows)}
                         ${renderGroup('Autres modifications de la fiche', client.logs.length, clientLogs)}
                     </div>
                 </details>`;
@@ -3955,7 +4330,7 @@
     try {
         const {
             emailsSent = [], emailsAffected = [], aircallCalls = [],
-            tasksCompleted = [], logs = [], estimates = [],
+            tasksCompleted = [], logs = [], journalEvents = [], estimates = [],
             policies = [], claims = [], user = '', date = ''
         } = this.data;
 
@@ -4026,7 +4401,7 @@
             time: extractTime(item.time),
             title: item.contact || item.phone || 'Contact inconnu',
             client: item.clientName || item.contact || '',
-            detail: `${item.duration || '0s'}${item.mood ? ` · ${item.mood}` : ''}`,
+            detail: `${item.duration || '0s'}${item.mood ? ` · ${item.mood}` : ''} · ${item.modulrNoteStatus === 'ok' ? 'Note ModulR créée' : 'Attention : note ModulR non retrouvée'}`,
             summary: item.summary || '',
             extra: [
                 item.topics?.length ? `Sujets : ${item.topics.map(topic => typeof topic === 'string' ? topic : (topic?.name || topic?.content || '')).filter(Boolean).join(', ')}` : '',
@@ -4093,7 +4468,35 @@
             summary: ''
         }));
 
-        actions.sort((a, b) => a.timeSeconds - b.timeSeconds);
+        journalEvents.forEach(event => {
+            // Ne pas doubler les emails envoyés déjà couverts par le moteur principal.
+            if (event.subtype === 'email_sent_journal_only') {
+                push({category:'emails',label:'Email envoyé · Journalisation',time:event.time,title:event.title,client:event.clientName || (event.clientId ? 'Client n° ' + event.clientId : ''),detail:event.detail,summary:event.summary || ''});
+                return;
+            }
+            if (event.subtype === 'task_close_journal_only') {
+                push({category:'tasks',label:'Tâche clôturée · Journalisation',time:event.time,title:event.title,client:event.clientName || (event.clientId ? 'Client n° ' + event.clientId : ''),detail:event.detail,summary:event.summary || ''});
+                return;
+            }
+            if (event.category === 'emails') {
+                if (event.subtype === 'email_classified' && event.alreadyCollected) return;
+                push({category:'emails',label:event.detail || 'Email · Journalisation',time:event.time,title:event.title,client:event.clientName || (event.clientId ? 'Client n° ' + event.clientId : ''),detail:'Source : Journalisation',summary:event.summary || ''});
+                return;
+            }
+            if (event.category === 'tasks') {
+                push({category:'tasks',label:event.title || 'Tâche · Journalisation',time:event.time,title:event.detail || event.title,client:event.clientName || (event.clientId ? 'Client n° ' + event.clientId : ''),detail:'Source : Journalisation',summary:event.summary || ''});
+                return;
+            }
+            if (event.category === 'ged' || event.category === 'ged_consult') {
+                push({category:'ged',label:event.category === 'ged_consult' ? 'Consultation GED' : (event.title || 'GED'),time:event.time,title:event.detail || ('Document n° ' + (event.entityId || '—')),client:event.clientName || (event.clientId ? 'Client n° ' + event.clientId : ''),detail:'Source : Journalisation',summary:event.summary || ''});
+                return;
+            }
+            if (event.subtype === 'custom_field') {
+                push({category:'client',label:'Fiche · champ personnalisé',time:event.time,title:event.detail,client:event.clientName || (event.clientId ? 'Client n° ' + event.clientId : ''),detail:event.summary || 'Source : Journalisation',summary:''});
+            }
+        });
+
+                actions.sort((a, b) => a.timeSeconds - b.timeSeconds);
 
         const counts = actions.reduce((acc, action) => {
             acc[action.category] = (acc[action.category] || 0) + 1;
@@ -4107,6 +4510,8 @@
             estimates: 'Devis',
             policies: 'Contrats',
             claims: 'Sinistres',
+            ged: 'GED',
+            client: 'Fiches client',
             other: 'Autres'
         };
 
@@ -4157,7 +4562,7 @@
                     .ltoa-chrono-main{max-width:1050px;margin:0 auto;padding:22px 24px 44px}.ltoa-chrono-summary{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:10px;margin-bottom:13px}.ltoa-chrono-stat{background:#fff;border:1px solid #e4e8ed;border-radius:17px;padding:14px 16px}.ltoa-chrono-stat strong{display:block;font-size:22px}.ltoa-chrono-stat span{font-size:10px;color:#7a8695}
                     .ltoa-chrono-tools{display:flex;gap:7px;align-items:center;flex-wrap:wrap;background:#fff;border:1px solid #e4e8ed;border-radius:17px;padding:10px;margin-bottom:16px}.ltoa-chrono-search{flex:1;min-width:220px;border:0;background:#f6f8fb;border-radius:11px;padding:10px 11px;font:inherit;font-size:11px;outline:none}.ltoa-chrono-filter{border:1px solid #e4e8ed;background:#fff;border-radius:999px;padding:7px 9px;font-size:10px;color:#526071;cursor:pointer}.ltoa-chrono-filter b{margin-left:5px}.ltoa-chrono-filter.active{background:#eef3ff;border-color:#d5e0ff;color:#315ea8}
                     .ltoa-timeline{position:relative}.ltoa-time-row{display:grid;grid-template-columns:72px 20px minmax(0,1fr);gap:8px;align-items:stretch;margin-bottom:8px}.ltoa-time-col{text-align:right;padding-top:11px}.ltoa-time-col strong{display:block;font-size:11px}.ltoa-time-col span{display:block;font-size:8px;color:#98a2b3;margin-top:3px}.ltoa-time-line{position:relative}.ltoa-time-line:before{content:"";position:absolute;left:9px;top:0;bottom:-9px;width:1px;background:#dfe5ec}.ltoa-time-line i{position:absolute;left:5px;top:14px;width:9px;height:9px;border-radius:50%;background:#5d7fd8;box-shadow:0 0 0 4px #edf3ff}
-                    .ltoa-time-card{background:#fff;border:1px solid #e4e8ed;border-radius:15px;padding:11px 12px;box-shadow:0 7px 22px rgba(15,23,42,.025)}.ltoa-time-card-head{display:flex;justify-content:space-between;gap:9px;align-items:center;margin-bottom:5px}.ltoa-time-tag{font-size:9px;background:#f1f4f8;border-radius:999px;padding:4px 7px;color:#596579;font-weight:700}.ltoa-time-row[data-category="emails"] .ltoa-time-tag{background:#ecfeff;color:#0e7490}.ltoa-time-row[data-category="calls"] .ltoa-time-tag{background:#fff7ed;color:#c2410c}.ltoa-time-row[data-category="tasks"] .ltoa-time-tag{background:#fffbeb;color:#b45309}.ltoa-time-row[data-category="estimates"] .ltoa-time-tag{background:#eff6ff;color:#1d4ed8}.ltoa-time-row[data-category="policies"] .ltoa-time-tag{background:#f5f3ff;color:#7c3aed}.ltoa-time-row[data-category="claims"] .ltoa-time-tag{background:#fef2f2;color:#b91c1c}.ltoa-time-client{font-size:9px;color:#667085}.ltoa-time-title{display:block;font-size:12px}.ltoa-time-detail{font-size:10px;color:#667085;margin-top:4px}.ltoa-time-more{margin-top:8px;border-top:1px solid #edf0f3;padding-top:7px}.ltoa-time-more summary{cursor:pointer;color:#315ea8;font-size:9px;font-weight:700}.ltoa-time-more div{white-space:pre-wrap;font-size:10px;color:#4d5968;line-height:1.5;margin-top:7px;background:#f7f9fb;border-radius:9px;padding:8px}
+                    .ltoa-time-card{background:#fff;border:1px solid #e4e8ed;border-radius:15px;padding:11px 12px;box-shadow:0 7px 22px rgba(15,23,42,.025)}.ltoa-time-card-head{display:flex;justify-content:space-between;gap:9px;align-items:center;margin-bottom:5px}.ltoa-time-tag{font-size:9px;background:#f1f4f8;border-radius:999px;padding:4px 7px;color:#596579;font-weight:700}.ltoa-time-row[data-category="emails"] .ltoa-time-tag{background:#ecfeff;color:#0e7490}.ltoa-time-row[data-category="calls"] .ltoa-time-tag{background:#fff7ed;color:#c2410c}.ltoa-time-row[data-category="tasks"] .ltoa-time-tag{background:#fffbeb;color:#b45309}.ltoa-time-row[data-category="estimates"] .ltoa-time-tag{background:#eff6ff;color:#1d4ed8}.ltoa-time-row[data-category="policies"] .ltoa-time-tag{background:#f5f3ff;color:#7c3aed}.ltoa-time-row[data-category="claims"] .ltoa-time-tag{background:#fef2f2;color:#b91c1c}.ltoa-time-row[data-category="ged"] .ltoa-time-tag{background:#f0fdfa;color:#0f766e}.ltoa-time-row[data-category="client"] .ltoa-time-tag{background:#faf5ff;color:#7e22ce}.ltoa-time-client{font-size:9px;color:#667085}.ltoa-time-title{display:block;font-size:12px}.ltoa-time-detail{font-size:10px;color:#667085;margin-top:4px}.ltoa-time-more{margin-top:8px;border-top:1px solid #edf0f3;padding-top:7px}.ltoa-time-more summary{cursor:pointer;color:#315ea8;font-size:9px;font-weight:700}.ltoa-time-more div{white-space:pre-wrap;font-size:10px;color:#4d5968;line-height:1.5;margin-top:7px;background:#f7f9fb;border-radius:9px;padding:8px}
                     .ltoa-chrono-empty{background:#fff;border:1px solid #e4e8ed;border-radius:18px;padding:42px;text-align:center;color:#7a8695;font-size:12px}
                     @media(max-width:760px){.ltoa-chrono-main{padding:14px}.ltoa-chrono-summary{grid-template-columns:1fr 1fr}.ltoa-time-row{grid-template-columns:48px 16px minmax(0,1fr)}.ltoa-time-col strong{font-size:10px}.ltoa-time-line:before{left:7px}.ltoa-time-line i{left:3px}.ltoa-time-card-head{align-items:flex-start;flex-direction:column}.ltoa-chrono-top{align-items:flex-start}}
                 </style>
@@ -4501,6 +4906,9 @@ ${chronoHTML}
     user: this.data.user || '',
     date: this.data.date || '',
     meta: this.data.auditMeta || {},
+    crossChecks: this.data.crossChecks || {},
+    journalEvents: this.data.journalEvents || [],
+    customFieldDictionaryVersion: CustomFieldDictionary.version,
     logs: this.data.auditLogs || []
 }).replace(/</g, '\\u003c')}<\/script>
 <script>${exportScript}<\/script>
@@ -5316,8 +5724,19 @@ ${chronoHTML}
                 logs,
                 estimates,
                 policies,
-                claims
+                claims,
+                auditLogs
             }, loader.updateStatus);
+
+            loader.update(10, 97, 'Croisement journalisation / moteurs métier...');
+            const intelligence = JournalIntelligence.analyze({
+                auditLogs: resolvedData.auditLogs || auditLogs,
+                tasksCompleted: resolvedData.tasksCompleted,
+                emailsSent: resolvedData.emailsSent,
+                emailsAffected: resolvedData.emailsAffected,
+                aircallCalls,
+                auditMeta
+            });
 
             // Finalisation
             loader.complete();
@@ -5328,13 +5747,15 @@ ${chronoHTML}
                 emailsAffected: resolvedData.emailsAffected,
                 pendingEmailsCount: pendingEmailsCount, // Nombre d'emails en attente
                 assignedEstimates: assignedEstimates, // Devis actuellement assignés + répartition par état
-                aircallCalls: aircallCalls, // Ajouter les appels Aircall
+                aircallCalls: intelligence.aircallCalls, // Appels enrichis par contrôle journalisation
                 tasksCompleted: resolvedData.tasksCompleted,
                 tasksOverdue: resolvedData.tasksOverdue,
                 pendingTasks: pendingTasks,
                 logs: resolvedData.logs,
-                auditLogs: auditLogs,
+                auditLogs: resolvedData.auditLogs || auditLogs,
                 auditMeta: auditMeta,
+                journalEvents: intelligence.events,
+                crossChecks: intelligence.crossChecks,
                 estimates: resolvedData.estimates,
                 policies: resolvedData.policies,
                 claims: resolvedData.claims,
