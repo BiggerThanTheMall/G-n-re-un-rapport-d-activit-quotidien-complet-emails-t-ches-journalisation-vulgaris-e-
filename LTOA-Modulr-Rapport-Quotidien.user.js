@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         LTOA Modulr - Rapport Quotidien
 // @namespace    https://github.com/BiggerThanTheMall/tampermonkey-ltoa
-// @version      5.9.0
+// @version      5.9.1
 // @description  Génération automatique du rapport d’activité quotidien dans Modulr
 // @author       LTOA Assurances
 // @match        https://courtage.modulr.fr/*
@@ -3112,6 +3112,16 @@
                 }
             }
 
+            const journalClassifiedMap=new Map();
+            for(const event of events){
+                if(event.subtype==='email_classified' && event.entityId && !journalClassifiedMap.has(String(event.entityId))){
+                    journalClassifiedMap.set(String(event.entityId),event);
+                }
+            }
+            const engineClassifiedMap=uniqueById(emailsAffected,e=>String(e.id||''));
+            const classifiedJournalOnly=[...journalClassifiedMap.keys()].filter(id=>!engineClassifiedMap.has(id)).map(id=>({id,event:journalClassifiedMap.get(id)}));
+            const classifiedEngineOnly=[...engineClassifiedMap.keys()].filter(id=>!journalClassifiedMap.has(id)).map(id=>engineClassifiedMap.get(id));
+
             // --- GED : regrouper insertion + renommage. Les PJ d'emails ne sont pas comptées comme classement GED.
             const attachmentDocumentIds=new Set();
             for(const log of auditLogs){
@@ -3140,7 +3150,9 @@
                 const renamed=group.filter(log=>this.change(log,'filename')||this.change(log,'title'));
                 const deleted=group.find(log=>this.newValue(log,'deleted')==='1' || /suppression|delete/i.test(log.actionRaw||log.action||''));
                 if(!insert && !renamed.length && !deleted) continue;
-                const contextLog=group.find(log=>this.clientId(log))||group[0];
+                const related=auditLogs.filter(log=>this.entityValue(log,'document_id')===id);
+                const contextPool=[...group,...related];
+                const contextLog=contextPool.find(log=>this.clientId(log))||group[0];
                 const firstName=this.entityValue(insert||group[0],'filename')||this.entityValue(insert||group[0],'title');
                 let finalName=firstName;
                 for(const log of renamed){
@@ -3148,7 +3160,7 @@
                 }
                 const context=[];
                 for(const field of ['estimate_id','policy_id','claim_id']){
-                    const found=group.map(log=>this.entityValue(log,field)).find(Boolean);
+                    const found=contextPool.map(log=>this.entityValue(log,field)).find(Boolean);
                     if(found) context.push(`${field==='estimate_id'?'Devis':field==='policy_id'?'Contrat':'Sinistre'} ${found}`);
                 }
                 const label=deleted?'Document supprimé':insert?'Document ajouté / classé':'Document renommé';
@@ -3201,7 +3213,8 @@
                 aircallCalls: enrichedCalls,
                 crossChecks:{
                     tasks:{engineCount:engineTaskMap.size,journalCount:journalTaskMap.size,journalOnly:taskJournalOnly,engineOnly:taskEngineOnly,paginationIncomplete:!!auditMeta.paginationRepeated},
-                    emailsSent:{engineCount:engineEmailMap.size,journalCount:journalEmailMap.size,journalOnly:sentJournalOnly,engineOnly:sentEngineOnly,paginationIncomplete:!!auditMeta.paginationRepeated}
+                    emailsSent:{engineCount:engineEmailMap.size,journalCount:journalEmailMap.size,journalOnly:sentJournalOnly,engineOnly:sentEngineOnly,paginationIncomplete:!!auditMeta.paginationRepeated},
+                    emailsClassified:{engineCount:engineClassifiedMap.size,journalCount:journalClassifiedMap.size,journalOnly:classifiedJournalOnly,engineOnly:classifiedEngineOnly,paginationIncomplete:!!auditMeta.paginationRepeated}
                 }
             };
         }
@@ -3371,8 +3384,8 @@
                 const sourceHint = check.paginationIncomplete ? ' · pagination journalisation incomplète détectée' : '';
                 const rows = [];
                 for (const item of journalOnly) {
-                    const log = item.log || item;
-                    rows.push(`<div class="ltoa-cross-row is-journal"><b>Journalisation uniquement</b><span>${Utils.escapeHtml(itemLabel)} ${Utils.escapeHtml(item.id || log.entityId || '—')} · ${Utils.escapeHtml(log.date || '')}</span></div>`);
+                    const log = item.log || item.event || item;
+                    rows.push(`<div class="ltoa-cross-row is-journal"><b>Journalisation uniquement</b><span>${Utils.escapeHtml(itemLabel)} ${Utils.escapeHtml(item.id || log.entityId || '—')} · ${Utils.escapeHtml(log.date || log.time || '')}</span></div>`);
                 }
                 for (const item of engineOnly) {
                     rows.push(`<div class="ltoa-cross-row is-engine"><b>Moteur principal uniquement</b><span>${Utils.escapeHtml(itemLabel)} ${Utils.escapeHtml(item.id || '—')} · ${Utils.escapeHtml(item.closedTime || item.time || item.date || '')}</span></div>`);
@@ -3386,6 +3399,7 @@
 
             const taskCrossHtml = renderSourceCrossCheck('Tâches clôturées', crossChecks.tasks, 'Tâche n°');
             const emailCrossHtml = renderSourceCrossCheck('Emails envoyés', crossChecks.emailsSent, 'Email n°');
+            const emailClassifiedCrossHtml = renderSourceCrossCheck('Emails classés', crossChecks.emailsClassified, 'Email n°');
 
             const extraEmailEvents = journalEvents.filter(event => event.category === 'emails' && (
                 event.subtype !== 'email_classified' || !event.alreadyCollected
@@ -3487,6 +3501,13 @@
                                     </div>
 
                                     ${call.summary ? `<div class="ltoa-call-summary"><b>Résumé</b><div>${Utils.escapeHtml(call.summary)}</div></div>` : ''}
+                                    <div class="ltoa-call-detail-block">
+                                        <b>Enrichissement ModulR</b>
+                                        <div>${call.modulrNoteStatus === 'ok'
+                                            ? `✓ Note créée sur ModulR${call.modulrTaskId ? ' · événement/tâche n° ' + Utils.escapeHtml(call.modulrTaskId) : ''}`
+                                            : '⚠ Aucune note ModulR correspondante retrouvée dans la journalisation'}</div>
+                                        ${call.modulrNote ? `<div class="ltoa-row-meta">${Utils.escapeHtml(Utils.cleanRichText(call.modulrNote))}</div>` : ''}
+                                    </div>
 
                                     ${topics.length ? `
                                         <div class="ltoa-call-detail-block">
@@ -3686,7 +3707,7 @@
                                     'Emails',
                                     emailsSent.length + emailsAffected.length,
                                     emailSummary,
-                                    `${emailCrossHtml}${table(['Heure','Action','Client / interlocuteur','Référence','Objet'], emailRows + journalEmailRows, 'Aucune activité email')}`
+                                    `${emailCrossHtml}${emailClassifiedCrossHtml}${table(['Heure','Action','Client / interlocuteur','Référence','Objet'], emailRows + journalEmailRows, 'Aucune activité email')}`
                                 )}
         
                                 ${section(
@@ -3998,6 +4019,7 @@
         ));
 
         journalEvents.forEach(item => {
+            if (item.subtype === 'email_classified' && item.alreadyCollected) return;
             if (!item.clientId && !item.clientName) return;
             addToClient(item.clientName, item.clientId, null, 'journalEvents', item);
         });
@@ -4909,6 +4931,7 @@ ${chronoHTML}
     crossChecks: this.data.crossChecks || {},
     journalEvents: this.data.journalEvents || [],
     customFieldDictionaryVersion: CustomFieldDictionary.version,
+    customFields: CustomFieldDictionary.fields,
     logs: this.data.auditLogs || []
 }).replace(/</g, '\\u003c')}<\/script>
 <script>${exportScript}<\/script>
