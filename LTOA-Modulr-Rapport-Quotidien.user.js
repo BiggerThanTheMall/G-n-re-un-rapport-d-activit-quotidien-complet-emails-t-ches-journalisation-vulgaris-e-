@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         LTOA Modulr - Rapport Quotidien
 // @namespace    https://github.com/BiggerThanTheMall/tampermonkey-ltoa
-// @version      5.9.3
+// @version      5.9.4
 // @description  Génération automatique du rapport d’activité quotidien dans Modulr
 // @author       LTOA Assurances
 // @match        https://courtage.modulr.fr/*
@@ -2187,7 +2187,11 @@
                         const href = nextAnchor?.getAttribute('href') || '';
                         nextPageUrl = href && href !== '#' && !href.startsWith('javascript:') ? new URL(href, baseUrl).toString() : null;
                         if (nextPageUrl && new URL(nextPageUrl).origin !== new URL(baseUrl).origin) nextPageUrl = null;
-                        if (entriesThisPage === 0 || (entriesThisPage < 50 && !nextPageUrl)) {
+                        // Compter les lignes réellement présentes sur la page, pas seulement celles du jour.
+                        // Ainsi, un rapport du 17 lancé le 19 traverse bien les pages du 19 et du 18.
+                        const rawPageCount = Array.from(rows).filter(r => r.classList.contains('color_grey_3') &&
+                            r.classList.contains('no_hover_background') && r.querySelectorAll('td').length === 6).length;
+                        if (rawPageCount === 0 || (rawPageCount < 50 && !nextPageUrl)) {
                             completed = true;
                             hasMorePages = false;
                         } else if (currentPage >= 500) {
