@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         LTOA Modulr - Rapport Quotidien
 // @namespace    https://github.com/BiggerThanTheMall/tampermonkey-ltoa
-// @version      5.9.1
+// @version      5.9.2
 // @description  Génération automatique du rapport d’activité quotidien dans Modulr
 // @author       LTOA Assurances
 // @match        https://courtage.modulr.fr/*
@@ -2022,12 +2022,17 @@
             let currentPage = 1;
             let hasMorePages = true;
             const pageFingerprints = new Set();
+            const targetDate = Utils.parseDate(today);
+            let nextPageUrl = null;
+            let completed = false;
             this.lastAuditMeta = {
                 fetchedEntries: 0,
                 uniqueEntries: 0,
                 duplicateEntries: 0,
                 paginationRepeated: false,
-                paginationDiagnostic: ''
+                paginationDiagnostic: '',
+                paginationComplete: false,
+                pagesFetched: 0
             };
 
             try {
@@ -2042,8 +2047,22 @@
 
                     Utils.log(`POST journalisation générale page ${currentPage}`);
 
-                    const html = await Utils.fetchPagePost(baseUrl, params.toString());
-                    const doc = Utils.parseHTML(html);
+                    let html = nextPageUrl ? await Utils.fetchPage(nextPageUrl) : await Utils.fetchPagePost(baseUrl, params.toString());
+                    let doc = Utils.parseHTML(html);
+                    const fingerprintOf = d => Array.from(d.querySelectorAll('table.table_list tr.color_grey_3'))
+                        .slice(0, 8).map(r => r.textContent.replace(/\s+/g, ' ').trim()).join('|');
+                    if (currentPage > 1 && pageFingerprints.has(fingerprintOf(doc))) {
+                        const url = new URL(baseUrl);
+                        url.searchParams.set('page', String(currentPage));
+                        url.searchParams.set('filters[user_id]', String(userId.logValue));
+                        url.searchParams.set('filters[user_log_date]', today);
+                        const altHtml = await Utils.fetchPage(url.toString());
+                        const altDoc = Utils.parseHTML(altHtml);
+                        if (fingerprintOf(altDoc) && !pageFingerprints.has(fingerprintOf(altDoc))) {
+                            html = altHtml;
+                            doc = altDoc;
+                        }
+                    }
 
                     const noResult = html.includes('Aucun résultat') || html.includes('aucun résultat');
                     if (noResult && currentPage === 1) {
@@ -2060,11 +2079,7 @@
                     const rows = tableEl.querySelectorAll('tr');
                     Utils.log(`Page ${currentPage}: ${rows.length} lignes pour logs généraux`);
 
-                    const fingerprint = Array.from(rows)
-                        .filter(row => row.classList.contains('color_grey_3'))
-                        .slice(0, 5)
-                        .map(row => row.textContent.replace(/\s+/g, ' ').trim())
-                        .join('|');
+                    const fingerprint = fingerprintOf(doc);
                     if (fingerprint && pageFingerprints.has(fingerprint)) {
                         this.lastAuditMeta.paginationRepeated = true;
                         const paginationHints = Array.from(doc.querySelectorAll('a[href], input[name], select[name]'))
@@ -2083,6 +2098,7 @@
                         break;
                     }
                     if (fingerprint) pageFingerprints.add(fingerprint);
+                    this.lastAuditMeta.pagesFetched++;
 
                     let entriesThisPage = 0;
                     let currentEntry = null;
@@ -2099,10 +2115,14 @@
                                 entriesThisPage++;
                             }
 
+                            const rawDate = cells[2]?.textContent?.trim() || '';
+                            const matchDate = rawDate.match(/(\d{2}\/\d{2}\/\d{4})/);
+                            const entryDate = matchDate ? Utils.parseDate(matchDate[1]) : null;
                             const actionRaw = cells[1]?.textContent?.trim() || '';
                             const tableRaw = cells[3]?.textContent?.trim() || '';
 
-                            if (actionRaw && (actionRaw.includes('Insertion') || actionRaw.includes('Mise à jour') || actionRaw.includes('Suppression'))) {
+                            if ((!entryDate || (targetDate && entryDate.getTime() === targetDate.getTime())) &&
+                                actionRaw && (actionRaw.includes('Insertion') || actionRaw.includes('Mise à jour') || actionRaw.includes('Suppression'))) {
                                 currentEntry = {
                                     user: cells[0]?.textContent?.trim() || 'N/A',
                                     actionRaw: actionRaw,
@@ -2149,15 +2169,38 @@
 
                     Utils.log(`Page ${currentPage}: ${entriesThisPage} entrées générales ajoutées`);
 
-                    // Pagination
-                    if (entriesThisPage < 50 || entriesThisPage === 0) {
+                    // Les résultats sont triés décroissants : arrêter à la première date plus ancienne.
+                    const dates = Array.from(rows).filter(r => r.classList.contains('color_grey_3'))
+                        .map(r => (r.querySelectorAll('td')[2]?.textContent || '').match(/(\d{2}\/\d{2}\/\d{4})/)?.[1])
+                        .filter(Boolean).map(d => Utils.parseDate(d)).filter(Boolean);
+                    const descending = dates.every((d, i) => i === 0 || dates[i - 1] >= d);
+                    const reachedOlder = descending && dates.some(d => targetDate && d < targetDate);
+                    if (reachedOlder) {
+                        completed = true;
                         hasMorePages = false;
                     } else {
-                        currentPage++;
-                        await Utils.delay(CONFIG.DELAY_BETWEEN_REQUESTS);
+                        const nextAnchor = Array.from(doc.querySelectorAll('a[href]')).find(a => {
+                            const label = (a.textContent + ' ' + (a.title || '') + ' ' + (a.getAttribute('aria-label') || '')).toLowerCase();
+                            const href = a.getAttribute('href') || '';
+                            return /suivant|next|»|›/.test(label) || href.includes('page=' + (currentPage + 1));
+                        });
+                        const href = nextAnchor?.getAttribute('href') || '';
+                        nextPageUrl = href && href !== '#' && !href.startsWith('javascript:') ? new URL(href, baseUrl).toString() : null;
+                        if (nextPageUrl && new URL(nextPageUrl).origin !== new URL(baseUrl).origin) nextPageUrl = null;
+                        if (entriesThisPage === 0 || (entriesThisPage < 50 && !nextPageUrl)) {
+                            completed = true;
+                            hasMorePages = false;
+                        } else if (currentPage >= 500) {
+                            this.lastAuditMeta.paginationDiagnostic = 'Limite de sécurité de 500 pages atteinte';
+                            hasMorePages = false;
+                        } else {
+                            currentPage++;
+                            await Utils.delay(CONFIG.DELAY_BETWEEN_REQUESTS);
+                        }
                     }
                 }
 
+                this.lastAuditMeta.paginationComplete = completed && !this.lastAuditMeta.paginationRepeated;
                 Utils.log(`Total ${results.length} actions générales brutes trouvées`);
             } catch (error) {
                 Utils.log('Erreur collecte journalisation générale:', error);
@@ -3377,7 +3420,7 @@
             }).join('');
 
             const renderSourceCrossCheck = (label, check, itemLabel) => {
-                if (!check) return '';
+                if (!check || check.paginationIncomplete) return '';
                 const journalOnly = check.journalOnly || [];
                 const engineOnly = check.engineOnly || [];
                 if (!journalOnly.length && !engineOnly.length) return '';
@@ -3505,7 +3548,7 @@
                                         <b>Enrichissement ModulR</b>
                                         <div>${call.modulrNoteStatus === 'ok'
                                             ? `✓ Note créée sur ModulR${call.modulrTaskId ? ' · événement/tâche n° ' + Utils.escapeHtml(call.modulrTaskId) : ''}`
-                                            : '⚠ Aucune note ModulR correspondante retrouvée dans la journalisation'}</div>
+                                            : (auditMeta.paginationComplete ? 'Aucune note ModulR correspondante identifiée' : 'Correspondance non vérifiable : journalisation incomplète')}</div>
                                         ${call.modulrNote ? `<div class="ltoa-row-meta">${Utils.escapeHtml(Utils.cleanRichText(call.modulrNote))}</div>` : ''}
                                     </div>
 
