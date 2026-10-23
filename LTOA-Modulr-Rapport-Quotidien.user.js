@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         LTOA Modulr - Rapport Quotidien
 // @namespace    https://github.com/BiggerThanTheMall/tampermonkey-ltoa
-// @version      5.9.2
+// @version      5.9.3
 // @description  Génération automatique du rapport d’activité quotidien dans Modulr
 // @author       LTOA Assurances
 // @match        https://courtage.modulr.fr/*
@@ -2961,6 +2961,13 @@
                     if (after.includes('email_in_queue') || after.includes('queue')) return {known:true,technical:true,domain,label:'Email mis en file d’envoi',subtype:'email_queue',confidence:'forte'};
                 }
                 if (has('assigned_to','assigned_by')) return {known:true,technical:false,domain,label:'Email attribué à un collaborateur',subtype:'email_assign',confidence:'forte'};
+                // Les écritures intermédiaires de composition ne sont pas des actions métiers.
+                const technicalEmailFields = new Set(['blob_id','last_update','last_update_user_id','send_date',
+                    'origin','email_origin','from','sender','sender_id','to','recipient','subject',
+                    'eml_message_id','uid','creation_date','creation_user_id']);
+                if (changes.length && changes.every(c => technicalEmailFields.has(this.normalize(c.fieldRaw)))) {
+                    return {known:true,technical:true,domain,label:'Préparation technique de l’email',subtype:'email_draft_metadata',confidence:'forte'};
+                }
                 if (isInsert && has('email_id','blob_id','uid')) return {known:true,technical:true,domain,label:'Email importé lors de la relève',subtype:'email_import',confidence:'forte'};
                 if (isInsert && has('sent_email_id','send_date','to','subject')) return {known:true,technical:true,domain,label:'Préparation technique d’un email envoyé',subtype:'email_create',confidence:'forte'};
             }
@@ -3255,9 +3262,9 @@
                 events,
                 aircallCalls: enrichedCalls,
                 crossChecks:{
-                    tasks:{engineCount:engineTaskMap.size,journalCount:journalTaskMap.size,journalOnly:taskJournalOnly,engineOnly:taskEngineOnly,paginationIncomplete:!!auditMeta.paginationRepeated},
-                    emailsSent:{engineCount:engineEmailMap.size,journalCount:journalEmailMap.size,journalOnly:sentJournalOnly,engineOnly:sentEngineOnly,paginationIncomplete:!!auditMeta.paginationRepeated},
-                    emailsClassified:{engineCount:engineClassifiedMap.size,journalCount:journalClassifiedMap.size,journalOnly:classifiedJournalOnly,engineOnly:classifiedEngineOnly,paginationIncomplete:!!auditMeta.paginationRepeated}
+                    tasks:{engineCount:engineTaskMap.size,journalCount:journalTaskMap.size,journalOnly:taskJournalOnly,engineOnly:taskEngineOnly,paginationIncomplete:!auditMeta.paginationComplete},
+                    emailsSent:{engineCount:engineEmailMap.size,journalCount:journalEmailMap.size,journalOnly:sentJournalOnly,engineOnly:sentEngineOnly,paginationIncomplete:!auditMeta.paginationComplete},
+                    emailsClassified:{engineCount:engineClassifiedMap.size,journalCount:journalClassifiedMap.size,journalOnly:classifiedJournalOnly,engineOnly:classifiedEngineOnly,paginationIncomplete:!auditMeta.paginationComplete}
                 }
             };
         }
