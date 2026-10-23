@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         LTOA Modulr - Rapport Quotidien
 // @namespace    https://github.com/BiggerThanTheMall/tampermonkey-ltoa
-// @version      5.9.5
+// @version      5.9.6
 // @description  Génération automatique du rapport d’activité quotidien dans Modulr
 // @author       LTOA Assurances
 // @match        https://courtage.modulr.fr/*
@@ -2023,7 +2023,6 @@
             let hasMorePages = true;
             const pageFingerprints = new Set();
             const targetDate = Utils.parseDate(today);
-            let nextPageUrl = null;
             let completed = false;
             let pageDateParsingFailed = false;
             this.lastAuditMeta = {
@@ -2044,27 +2043,18 @@
                     const params = new URLSearchParams();
                     params.append('filters[user_id]', userId.logValue);
                     params.append('filters[user_log_date]', today);
-                    params.append('page', currentPage);
 
                     Utils.log(`POST journalisation générale page ${currentPage}`);
 
-                    let html = nextPageUrl ? await Utils.fetchPage(nextPageUrl) : await Utils.fetchPagePost(baseUrl, params.toString());
-                    let doc = Utils.parseHTML(html);
+                    // Navigation native ModulR : POST limit=next (bouton "50 prochaines entrées").
+                    // Le serveur conserve son curseur de pagination dans la session.
+                    // Envoyer les filtres uniquement au premier POST, puis suivre les boutons natifs.
+                    const html = currentPage === 1
+                        ? await Utils.fetchPagePost(baseUrl, params.toString())
+                        : await Utils.fetchPagePost(baseUrl, new URLSearchParams({mcut:'', limit:'next'}).toString());
+                    const doc = Utils.parseHTML(html);
                     const fingerprintOf = d => Array.from(d.querySelectorAll('table.table_list tr.color_grey_3'))
                         .slice(0, 8).map(r => r.textContent.replace(/\s+/g, ' ').trim()).join('|');
-                    if (currentPage > 1 && pageFingerprints.has(fingerprintOf(doc))) {
-                        const url = new URL(baseUrl);
-                        url.searchParams.set('page', String(currentPage));
-                        url.searchParams.set('filters[user_id]', String(userId.logValue));
-                        url.searchParams.set('filters[user_log_date]', today);
-                        const altHtml = await Utils.fetchPage(url.toString());
-                        const altDoc = Utils.parseHTML(altHtml);
-                        if (fingerprintOf(altDoc) && !pageFingerprints.has(fingerprintOf(altDoc))) {
-                            html = altHtml;
-                            doc = altDoc;
-                        }
-                    }
-
                     const noResult = html.includes('Aucun résultat') || html.includes('aucun résultat');
                     if (noResult && currentPage === 1) {
                         Utils.log('Aucun résultat pour logs généraux');
@@ -2181,19 +2171,15 @@
                         completed = true;
                         hasMorePages = false;
                     } else {
-                        const nextAnchor = Array.from(doc.querySelectorAll('a[href]')).find(a => {
-                            const label = (a.textContent + ' ' + (a.title || '') + ' ' + (a.getAttribute('aria-label') || '')).toLowerCase();
-                            const href = a.getAttribute('href') || '';
-                            return /suivant|next|»|›/.test(label) || href.includes('page=' + (currentPage + 1));
-                        });
-                        const href = nextAnchor?.getAttribute('href') || '';
-                        nextPageUrl = href && href !== '#' && !href.startsWith('javascript:') ? new URL(href, baseUrl).toString() : null;
-                        if (nextPageUrl && new URL(nextPageUrl).origin !== new URL(baseUrl).origin) nextPageUrl = null;
+                        // Natif ModulR : la page suivante est un formulaire POST limit=next.
+                        const nextForm = Array.from(doc.querySelectorAll('form')).find(form =>
+                            form.querySelector('input[name="limit"][value="next"]'));
+                        const hasNext = !!nextForm;
                         // Compter les lignes réellement présentes sur la page, pas seulement celles du jour.
                         // Ainsi, un rapport du 17 lancé le 19 traverse bien les pages du 19 et du 18.
                         const rawPageCount = Array.from(rows).filter(r => r.classList.contains('color_grey_3') &&
                             r.classList.contains('no_hover_background') && r.querySelectorAll('td').length === 6).length;
-                        if (rawPageCount === 0 || (rawPageCount < 50 && !nextPageUrl)) {
+                        if (rawPageCount === 0 || !hasNext) {
                             completed = true;
                             hasMorePages = false;
                         } else if (currentPage >= 500) {
