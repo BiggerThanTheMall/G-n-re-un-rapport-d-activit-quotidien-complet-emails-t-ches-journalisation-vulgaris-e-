@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         LTOA Modulr - Rapport Quotidien
 // @namespace    https://github.com/BiggerThanTheMall/tampermonkey-ltoa
-// @version      5.9.4
+// @version      5.9.5
 // @description  Génération automatique du rapport d’activité quotidien dans Modulr
 // @author       LTOA Assurances
 // @match        https://courtage.modulr.fr/*
@@ -2025,6 +2025,7 @@
             const targetDate = Utils.parseDate(today);
             let nextPageUrl = null;
             let completed = false;
+            let pageDateParsingFailed = false;
             this.lastAuditMeta = {
                 fetchedEntries: 0,
                 uniqueEntries: 0,
@@ -2118,6 +2119,7 @@
                             const rawDate = cells[2]?.textContent?.trim() || '';
                             const matchDate = rawDate.match(/(\d{2}\/\d{2}\/\d{4})/);
                             const entryDate = matchDate ? Utils.parseDate(matchDate[1]) : null;
+                            if (!entryDate) pageDateParsingFailed = true;
                             const actionRaw = cells[1]?.textContent?.trim() || '';
                             const tableRaw = cells[3]?.textContent?.trim() || '';
 
@@ -2204,7 +2206,7 @@
                     }
                 }
 
-                this.lastAuditMeta.paginationComplete = completed && !this.lastAuditMeta.paginationRepeated;
+                this.lastAuditMeta.paginationComplete = completed && !this.lastAuditMeta.paginationRepeated && !pageDateParsingFailed;
                 Utils.log(`Total ${results.length} actions générales brutes trouvées`);
             } catch (error) {
                 Utils.log('Erreur collecte journalisation générale:', error);
@@ -4233,7 +4235,7 @@
                         <div>
                             <strong>${call.type === 'sortant' ? 'Appel sortant' : 'Appel entrant'} · ${Utils.escapeHtml(call.contact || call.phone || '—')}</strong>
                             <small>${Utils.escapeHtml(call.time || '')} · ${Utils.escapeHtml(call.duration || '0s')}${call.mood ? ` · ${Utils.escapeHtml(call.mood)}` : ''}</small>
-                            <small>${call.modulrNoteStatus === 'ok' ? '✓ Note ModulR créée' : '⚠ Note ModulR non retrouvée'}</small>
+                            <small>${call.modulrNoteStatus === 'ok' ? 'Note ModulR retrouvée' : (auditMeta.paginationComplete ? 'Aucune note correspondante identifiée' : 'Correspondance non vérifiable : données incomplètes')}</small>
                         </div>
                     </div>
                     ${call.summary ? `<div class="ltoa-sub-text"><b>Résumé</b><br>${Utils.escapeHtml(call.summary)}</div>` : ''}
@@ -4477,7 +4479,7 @@
             time: extractTime(item.time),
             title: item.contact || item.phone || 'Contact inconnu',
             client: item.clientName || item.contact || '',
-            detail: `${item.duration || '0s'}${item.mood ? ` · ${item.mood}` : ''} · ${item.modulrNoteStatus === 'ok' ? 'Note ModulR créée' : 'Attention : note ModulR non retrouvée'}`,
+            detail: `${item.duration || '0s'}${item.mood ? ` · ${item.mood}` : ''} · ${item.modulrNoteStatus === 'ok' ? 'Note ModulR retrouvée' : (auditMeta.paginationComplete ? 'Aucune note correspondante identifiée' : 'Correspondance non vérifiable : données incomplètes')}`,
             summary: item.summary || '',
             extra: [
                 item.topics?.length ? `Sujets : ${item.topics.map(topic => typeof topic === 'string' ? topic : (topic?.name || topic?.content || '')).filter(Boolean).join(', ')}` : '',
